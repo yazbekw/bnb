@@ -1,3 +1,13 @@
+import requests
+
+def get_public_ip():
+    try:
+        response = requests.get('https://api.ipify.org?format=json', timeout=10)
+        return response.json()['ip']
+    except:
+        return "غير معروف"
+
+print(f"IP الخادم: {get_public_ip()}")
 import os
 import pandas as pd
 import numpy as np
