@@ -35,7 +35,7 @@ class TelegramNotifier:
             logger.error(f"خطأ في إرسال رسالة Telegram: {e}")
 
 class BNB_Trading_Bot:
-    def __init__(self, initial_balance=1000):
+    def __init__(self):
         # الحصول على المفاتيح من متغيرات البيئة
         api_key = os.environ.get('BINANCE_API_KEY')
         api_secret = os.environ.get('BINANCE_API_SECRET')
@@ -46,7 +46,7 @@ class BNB_Trading_Bot:
             raise ValueError("مفاتيح Binance غير موجودة في متغيرات البيئة")
             
         # تحديد وضع الاختبار بناءً على متغير البيئة
-        self.test_mode = os.environ.get('TEST_MODE', 'False').lower() == 'false'
+        self.test_mode = os.environ.get('TEST_MODE', 'False').lower() == 'true'
         
         if not self.test_mode:  # التداول الفعلي
             self.client = Client(api_key, api_secret)
@@ -55,20 +55,78 @@ class BNB_Trading_Bot:
             self.client = Client(api_key, api_secret, testnet=True)
             logger.info("وضع الاختبار مفعّل")
             
-        self.initial_balance = initial_balance
-        self.balance = initial_balance
         self.fee_rate = 0.001  # عمولة Binance الأساسية
         self.slippage = 0.0005
         self.trades = []
         self.symbol = "BNBUSDT"
         
+        # جلب الرصيد الابتدائي الحقيقي من المنصة
+        self.initial_balance = self.get_real_balance()
+        
         # إعداد إشعارات Telegram إذا كانت المفاتيح متوفرة
         if telegram_token and telegram_chat_id:
             self.notifier = TelegramNotifier(telegram_token, telegram_chat_id)
-            self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\nالرصيد الافتتاحي: ${initial_balance:.2f}\nوضع التشغيل: {'فعلي' if not self.test_mode else 'اختبار'}")
+            self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\nالرصيد الافتتاحي: ${self.initial_balance:.2f}\nوضع التشغيل: {'فعلي' if not self.test_mode else 'اختبار'}")
         else:
             self.notifier = None
             logger.warning("مفاتيح Telegram غير موجودة، سيتم تعطيل الإشعارات")
+    
+    def get_real_balance(self):
+        """جلب الرصيد الحقيقي من منصة Binance"""
+        try:
+            account = self.client.get_account()
+            balances = {asset['asset']: float(asset['free']) + float(asset['locked']) for asset in account['balances']}
+            
+            # الحصول على أسعار جميع الأصول
+            prices = self.client.get_all_tickers()
+            price_dict = {item['symbol']: float(item['price']) for item in prices}
+            
+            # حساب إجمالي الرصيد بالدولار
+            total_balance = 0
+            for asset, balance in balances.items():
+                if balance > 0:
+                    if asset == 'USDT':
+                        total_balance += balance
+                    else:
+                        symbol = asset + 'USDT'
+                        if symbol in price_dict:
+                            total_balance += balance * price_dict[symbol]
+                        elif asset + 'BTC' in price_dict and 'BTCUSDT' in price_dict:
+                            # إذا لم يكن هناك زوج مباشر مع USDT
+                            btc_price = price_dict['BTCUSDT']
+                            asset_btc_price = price_dict[asset + 'BTC']
+                            total_balance += balance * asset_btc_price * btc_price
+            
+            return total_balance
+        except Exception as e:
+            error_msg = f"❌ خطأ في جلب الرصيد من المنصة: {e}"
+            logger.error(error_msg)
+            if self.notifier:
+                self.notifier.send_message(error_msg)
+            return 0
+    
+    def get_account_balance_details(self):
+        """الحصول على تفاصيل الرصيد الحالي من حساب Binance"""
+        try:
+            account = self.client.get_account()
+            balances = {asset['asset']: {
+                'free': float(asset['free']),
+                'locked': float(asset['locked']),
+                'total': float(asset['free']) + float(asset['locked'])
+            } for asset in account['balances'] if float(asset['free']) > 0 or float(asset['locked']) > 0}
+            
+            # الحصول على سعر BNB الحالي
+            ticker = self.client.get_symbol_ticker(symbol=self.symbol)
+            bnb_price = float(ticker['price'])
+            
+            # حساب الرصيد الإجمالي
+            total_balance = self.get_real_balance()
+            
+            return total_balance, balances, bnb_price
+        except Exception as e:
+            error_msg = f"❌ خطأ في الحصول على رصيد الحساب: {e}"
+            logger.error(error_msg)
+            return None, None, None
     
     def send_notification(self, message):
         """إرسال إشعار إلى Telegram والتسجيل في السجلات"""
@@ -180,31 +238,13 @@ class BNB_Trading_Bot:
         
         return buy_signal, sell_signal, stop_loss, take_profit
     
-    def get_account_balance(self):
-        """الحصول على الرصيد الحالي من حساب Binance"""
-        try:
-            account = self.client.get_account()
-            balances = {asset['asset']: float(asset['free']) for asset in account['balances']}
-            usdt_balance = balances.get('USDT', 0)
-            bnb_balance = balances.get('BNB', 0)
-            
-            # الحصول على سعر BNB الحالي
-            ticker = self.client.get_symbol_ticker(symbol=self.symbol)
-            bnb_price = float(ticker['price'])
-            
-            total_balance = usdt_balance + (bnb_balance * bnb_price)
-            return total_balance, usdt_balance, bnb_balance, bnb_price
-        except Exception as e:
-            error_msg = f"❌ خطأ في الحصول على رصيد الحساب: {e}"
-            self.send_notification(error_msg)
-            return None, None, None, None
-    
-    def execute_real_trade(self, signal_type, quantity=None):
+    def execute_real_trade(self, signal_type):
         """تنفيذ صفقة حقيقية على Binance"""
         try:
             if signal_type == 'buy':
                 # الحصول على الرصيد المتاح
-                total_balance, usdt_balance, _, bnb_price = self.get_account_balance()
+                total_balance, balances, bnb_price = self.get_account_balance_details()
+                usdt_balance = balances.get('USDT', {}).get('free', 0)
                 
                 if usdt_balance < 10:  # على الأقل 10 USDT للشراء
                     self.send_notification("⚠️ رصيد USDT غير كافي للشراء")
@@ -234,7 +274,8 @@ class BNB_Trading_Bot:
                 
             elif signal_type == 'sell':
                 # الحصول على رصيد BNB
-                total_balance, _, bnb_balance, bnb_price = self.get_account_balance()
+                total_balance, balances, bnb_price = self.get_account_balance_details()
+                bnb_balance = balances.get('BNB', {}).get('free', 0)
                 
                 if bnb_balance < 0.001:  # على الأقل 0.001 BNB للبيع
                     self.send_notification("⚠️ رصيد BNB غير كافي للبيع")
@@ -278,67 +319,105 @@ class BNB_Trading_Bot:
             if not self.test_mode:  # التداول الفعلي
                 # تنفيذ صفقة حقيقية
                 success = self.execute_real_trade('buy')
-                if success:
-                    # تحديث الرصيد بعد الصفقة
-                    self.balance, _, _, _ = self.get_account_balance()
-                    return True
+                return success
             else:
                 # محاكاة الصفقة (للاختبار فقط)
-                quantity = (self.balance * (1 - self.fee_rate)) / current_price
-                self.balance -= self.balance * self.fee_rate
+                total_balance, balances, _ = self.get_account_balance_details()
+                usdt_balance = balances.get('USDT', {}).get('free', 0) if balances else 0
                 
-                msg = f"✅ <b>إشارة شراء (اختبار)</b>\n\nالسعر: ${current_price:.4f}\nالكمية: {quantity:.4f} BNB\nالقيمة: ${self.balance:.2f}\nوقف الخسارة: {stop_loss*100:.1f}%\nجني الأرباح: {take_profit*100:.1f}%"
-                self.send_notification(msg)
-                
-                trade = {
-                    'type': 'buy',
-                    'price': current_price,
-                    'quantity': quantity,
-                    'timestamp': datetime.now(),
-                    'balance': self.balance
-                }
-                self.trades.append(trade)
-                return True
+                if usdt_balance > 10:
+                    quantity = (usdt_balance * (1 - self.fee_rate)) / current_price
+                    
+                    msg = f"✅ <b>إشارة شراء (اختبار)</b>\n\nالسعر: ${current_price:.4f}\nالكمية: {quantity:.4f} BNB\nالقيمة: ${usdt_balance:.2f}\nوقف الخسارة: {stop_loss*100:.1f}%\nجني الأرباح: {take_profit*100:.1f}%"
+                    self.send_notification(msg)
+                    
+                    trade = {
+                        'type': 'buy',
+                        'price': current_price,
+                        'quantity': quantity,
+                        'timestamp': datetime.now(),
+                        'balance': total_balance
+                    }
+                    self.trades.append(trade)
+                    return True
         
         # إذا كانت هناك إشارة بيع
         elif sell_signal:
             if not self.test_mode:  # التداول الفعلي
                 # تنفيذ صفقة حقيقية
                 success = self.execute_real_trade('sell')
-                if success:
-                    # تحديث الرصيد بعد الصفقة
-                    self.balance, _, _, _ = self.get_account_balance()
-                    return True
+                return success
             else:
                 # محاكاة البيع (للاختبار فقط)
-                if hasattr(self, 'position') and self.position > 0:
-                    sell_value = self.position * current_price
-                    self.balance = sell_value * (1 - self.fee_rate)
-                    profit_percent = ((current_price - self.entry_price) / self.entry_price) * 100
+                total_balance, balances, _ = self.get_account_balance_details()
+                bnb_balance = balances.get('BNB', {}).get('free', 0) if balances else 0
+                
+                if bnb_balance > 0.001:
+                    sell_value = bnb_balance * current_price
+                    profit_percent = ((current_price - self.entry_price) / self.entry_price) * 100 if hasattr(self, 'entry_price') else 0
                     
-                    msg = f"🔻 <b>إشارة بيع (اختبار)</b>\n\nالسعر: ${current_price:.4f}\nالكمية: {self.position:.4f} BNB\nالقيمة: ${sell_value:.2f}\nالربح/الخسارة: {profit_percent:.2f}%"
+                    msg = f"🔻 <b>إشارة بيع (اختبار)</b>\n\nالسعر: ${current_price:.4f}\nالكمية: {bnb_balance:.4f} BNB\nالقيمة: ${sell_value:.2f}\nالربح/الخسارة: {profit_percent:.2f}%"
                     self.send_notification(msg)
                     
                     trade = {
                         'type': 'sell',
                         'price': current_price,
-                        'quantity': self.position,
+                        'quantity': bnb_balance,
                         'timestamp': datetime.now(),
-                        'balance': self.balance,
+                        'balance': total_balance,
                         'profit_percent': profit_percent
                     }
                     self.trades.append(trade)
-                    
-                    # إغلاق المركز
-                    del self.position
                     return True
         
         return False
+    
+    def send_performance_report(self):
+        """إرسال تقرير أداء مع الرصيد الحقيقي من المنصة"""
+        try:
+            total_balance, balances, bnb_price = self.get_account_balance_details()
+            
+            if total_balance is None:
+                return
+            
+            # حساب الأداء
+            profit_loss = total_balance - self.initial_balance
+            profit_loss_percent = (profit_loss / self.initial_balance) * 100 if self.initial_balance > 0 else 0
+            
+            # تفاصيل الرصيد
+            balance_details = ""
+            for asset, balance_info in balances.items():
+                if balance_info['total'] > 0.0001:  # تجاهل القيم الصغيرة جداً
+                    if asset == 'USDT':
+                        balance_details += f"{asset}: {balance_info['total']:.2f}\n"
+                    else:
+                        balance_details += f"{asset}: {balance_info['total']:.6f}\n"
+            
+            # إعداد الرسالة
+            message = f"📊 <b>تقرير أداء البوت</b>\n\n"
+            message += f"الرصيد الابتدائي: ${self.initial_balance:.2f}\n"
+            message += f"الرصيد الحالي: ${total_balance:.2f}\n"
+            message += f"الأرباح/الخسائر: ${profit_loss:.2f} ({profit_loss_percent:+.2f}%)\n\n"
+            message += f"<b>تفاصيل الرصيد:</b>\n{balance_details}"
+            
+            if bnb_price:
+                message += f"\nسعر BNB الحالي: ${bnb_price:.4f}"
+            
+            self.send_notification(message)
+            
+        except Exception as e:
+            error_msg = f"❌ خطأ في إرسال تقرير الأداء: {e}"
+            logger.error(error_msg)
     
     def run(self):
         """الدالة الرئيسية لتشغيل البوت بشكل مستمر"""
         interval_minutes = 15  # الفترة بين كل فحص للسوق
         self.send_notification(f"🚀 بدء تشغيل بوت تداول BNB\n\nسيعمل البوت على فحص السوق كل {interval_minutes} دقيقة")
+        
+        # إرسال تقرير الأداء الأولي
+        self.send_performance_report()
+        
+        report_counter = 0
         
         while True:
             try:
@@ -351,17 +430,11 @@ class BNB_Trading_Bot:
                 # تنفيذ التحليل والتداول
                 trade_executed = self.execute_trade()
                 
-                # إرسال تحديث دوري عن الحالة
-                if trade_executed or (len(self.trades) > 0 and len(self.trades) % 5 == 0):
-                    total_balance, usdt_balance, bnb_balance, bnb_price = self.get_account_balance()
-                    
-                    if total_balance is not None:
-                        total_trades = len(self.trades)
-                        profitable_trades = len([t for t in self.trades if t.get('profit_percent', 0) > 0])
-                        win_rate = (profitable_trades / total_trades) * 100 if total_trades > 0 else 0
-                        
-                        status_msg = f"📊 <b>تقرير أداء البوت</b>\n\nإجمالي الصفقات: {total_trades}\nالصفقات الرابحة: {profitable_trades}\nمعدل الربح: {win_rate:.2f}%\nالرصيد الحالي: ${total_balance:.2f}\nUSDT: {usdt_balance:.2f}\nBNB: {bnb_balance:.4f}"
-                        self.send_notification(status_msg)
+                # إرسال تحديث دوري عن الحالة كل 4 ساعات (16 دورة)
+                report_counter += 1
+                if trade_executed or report_counter >= 16:
+                    self.send_performance_report()
+                    report_counter = 0
                 
                 # الانتظار للفترة التالية
                 time.sleep(interval_minutes * 60)
@@ -374,10 +447,7 @@ class BNB_Trading_Bot:
 # تشغيل البوت
 if __name__ == "__main__":
     try:
-        # الحصول على الرصيد الافتتاحي من متغير البيئة إذا كان موجوداً
-        initial_balance = float(os.environ.get('INITIAL_BALANCE', 1000))
-        
-        bot = BNB_Trading_Bot(initial_balance=initial_balance)
+        bot = BNB_Trading_Bot()
         bot.run()
     except Exception as e:
         logger.error(f"فشل تشغيل البوت: {e}")
