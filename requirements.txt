@@ -1,5 +1,7 @@
 binance==1.0.16
-pandas==1.5.3
+pandas==2.0.3
 numpy==1.24.3
+requests==2.31.0
+python-telegram-bot==20.5
 python-dotenv==1.0.0
 schedule==1.2.0
