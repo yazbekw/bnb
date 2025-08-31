@@ -10,9 +10,28 @@ import logging
 import warnings
 warnings.filterwarnings('ignore')
 from dotenv import load_dotenv
+# إضافة المكتبات المطلوبة للخادم
+from flask import Flask
+import threading
 
 # تحميل متغيرات البيئة من ملف .env
 load_dotenv()
+
+# إنشاء تطبيق Flask
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return {'status': 'healthy', 'service': 'bnb-trading-bot', 'timestamp': datetime.now().isoformat()}
+
+@app.route('/status')
+def status():
+    return {'status': 'running', 'bot': 'BNB Trading Bot', 'time': datetime.now().isoformat()}
+
+def run_flask_app():
+    """تشغيل خادم Flask على المنفذ المحدد"""
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 # إعداد logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -303,34 +322,48 @@ class BNB_Trading_Bot:
             return None
     
     def bnb_strategy(self, data):
-        """استراتيجية BNB المبنية على المؤشرات المتعددة"""
-        if data is None or len(data) < 50:
+        """استراتيجية BNB معدلة بالكامل"""
+        if data is None or len(data) < 100:
             return False, False, 0, 0
-            
+        
         latest = data.iloc[-1]
-        prev = data.iloc[-2] if len(data) > 1 else latest
-        
-        # شروط الشراء لـ BNB - مطابقة لاستراتيجية finaleth
-        rsi_condition = latest['rsi'] >= 50 and latest['rsi'] <= 70
-        trend_condition = latest['trend_strong'] and latest['price_above_ema50']
-        macd_condition = latest['macd_hist'] > 0
-        volume_condition = latest['vol_ratio'] >= 1.0
-        
-        # شروط البيع لـ BNB
-        rsi_sell_condition = latest['rsi'] < 40 or latest['rsi'] > 75
-        macd_sell_condition = latest['macd_hist'] < 0
-        
-        # إشارة الشراء (جميع الشروط)
-        buy_signal = all([rsi_condition, trend_condition, macd_condition, volume_condition])
-        
-        # إشارة البيع (أي شرط)
-        sell_signal = any([rsi_sell_condition, macd_sell_condition])
-        
-        # وقف الخسارة وجني الأرباح - استخدام ATR مثل finaleth
+        prev = data.iloc[-2]
+    
+        # 🔄 التعديل الجذري على شروط الشراء
+        rsi_condition = latest['rsi'] >= 50 and latest['rsi'] <= 65
+        macd_condition = latest['macd'] > latest['macd_sig'] and latest['macd_hist'] > 0.1
+        volume_condition = latest['vol_ratio'] >= 1.2  # تخفيض الحد الأدنى للحجم
+    
+        # 📈 شروط الاتجاه المعدلة
+        price_above_ema20 = latest['close'] > latest['ema20']
+        ema_alignment = latest['ema9'] > latest['ema20'] > latest['ema50']
+        strong_trend = price_above_ema20 and ema_alignment
+    
+        # 🛑 شروط البيع المعدلة
+        rsi_sell = latest['rsi'] < 40 or latest['rsi'] > 75
+        macd_sell = latest['macd_hist'] < -0.1
+        price_below_ema9 = latest['close'] < latest['ema9']
+    
+        # ✅ إشارة الشراء النهائية
+        buy_signal = all([
+            rsi_condition,
+            macd_condition, 
+            volume_condition,
+            strong_trend
+        ])
+    
+        # ❌ إشارة البيع النهائية
+        sell_signal = any([
+            rsi_sell,
+            macd_sell,
+            price_below_ema9
+        ])
+    
+        # 🎯 إدارة المخاطر
         atr_val = latest['atr']
-        stop_loss = latest['close'] - (3.0 * atr_val)  # ATR multiplier = 3.0
-        take_profit = latest['close'] + (3.0 * 3.0 * atr_val)  # RR = 3.0
-        
+        stop_loss = latest['close'] - (2.0 * atr_val)  # تخفيض المضاعف
+        take_profit = latest['close'] + (2.0 * 2.0 * atr_val)  # RR = 2:1
+    
         return buy_signal, sell_signal, stop_loss, take_profit
     
     def execute_real_trade(self, signal_type):
@@ -462,6 +495,10 @@ class BNB_Trading_Bot:
     
     def run(self):
         """الدالة الرئيسية لتشغيل البوت بشكل مستمر"""
+        # بدء خادم Flask في thread منفصل
+        flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+        flask_thread.start()
+        
         interval_minutes = 15  # الفترة بين كل فحص للسوق
         self.send_notification(f"🚀 بدء تشغيل بوت تداول BNB\n\nسيعمل البوت على فحص السوق كل {interval_minutes} دقيقة")
         
@@ -498,11 +535,155 @@ class BNB_Trading_Bot:
 # تشغيل البوت
 if __name__ == "__main__":
     try:
-        print("🚀 بدء تشغيل بوت تداول BNB الفعلي...")
-        print("📝 وضع التشغيل: فعلي")
+        print("🚀 بدء تشغيل بوت تداول BNB...")
+        print("=" * 60)
         
+        # بدء خادم Flask في thread منفصل
+        flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+        flask_thread.start()
+        print("🌐 خادم الويب يعمل على المنفذ 10000")
+        
+        # وضع الباكتستنغ - إضافة معلمة test_mode=True
         bot = BNB_Trading_Bot()
-        bot.run()
+        
+        # اختبار الاتصال أولاً
+        if bot.test_connection():
+            print("✅ اختبار الاتصال ناجح!")
+            
+            # جلب البيانات التاريخية لفترات مختلفة
+            timeframes = [
+                ('1 hour ago UTC', '1 ساعة'),
+                ('24 hours ago UTC', '24 ساعة'), 
+                ('7 days ago UTC', '7 أيام'),
+                ('30 days ago UTC', '30 يوم'),
+                ('2000 hour ago UTC', '2000 ساعة')
+            ]
+            
+            all_data = {}
+            
+            for lookback, label in timeframes:
+                print(f"\n📊 جلب بيانات {label}...")
+                try:
+                    # تعديل دالة get_historical_data لقبول معامل lookback
+                    data = bot.get_historical_data(lookback=lookback)
+                    if data is not None:
+                        all_data[label] = data
+                        print(f"✅ {label}: {len(data)} صف - السعر: {data['close'].iloc[-1]:.4f} USDT")
+                    else:
+                        print(f"❌ فشل في جلب بيانات {label}")
+                except Exception as e:
+                    print(f"❌ خطأ في جلب بيانات {label}: {e}")
+            
+            if all_data:
+                # استخدام أحدث مجموعة بيانات للتحليل
+                latest_label = list(all_data.keys())[-1]
+                data = all_data[latest_label]
+                
+                print(f"\n{'='*60}")
+                print(f"📈 تحليل مفصل لأحدث بيانات ({latest_label}):")
+                print(f"{'='*60}")
+                
+                # عرض إحصائيات مفصلة
+                print(f"📅 الفترة: {data['timestamp'].iloc[0].strftime('%Y-%m-%d')} إلى {data['timestamp'].iloc[-1].strftime('%Y-%m-%d')}")
+                print(f"📊 عدد الصفوف: {len(data)}")
+                print(f"💰 السعر الحالي: {data['close'].iloc[-1]:.4f} USDT")
+                print(f"📈 أعلى سعر: {data['high'].max():.4f} USDT")
+                print(f"📉 أدنى سعر: {data['low'].min():.4f} USDT")
+                print(f"📊 متوسط السعر: {data['close'].mean():.4f} USDT")
+                
+                # تحليل المؤشرات
+                latest = data.iloc[-1]
+                print(f"\n📊 المؤشرات الفنية:")
+                print(f"📶 RSI: {latest['rsi']:.2f} {'(شراء)' if latest['rsi'] < 30 else '(بيع)' if latest['rsi'] > 70 else '(محايد)'}")
+                print(f"📈 MACD Histogram: {latest['macd_hist']:.6f} {'(إيجابي)' if latest['macd_hist'] > 0 else '(سلبي)'}")
+                print(f"📊 ATR: {latest['atr']:.4f}")
+                print(f"📈 EMA9: {latest['ema9']:.4f}")
+                print(f"📈 EMA20: {latest['ema20']:.4f}")
+                print(f"📈 EMA50: {latest['ema50']:.4f}")
+                print(f"📈 EMA200: {latest['ema200']:.4f}")
+                print(f"📊 نسبة الحجم: {latest['vol_ratio']:.2f}x")
+                
+                # اختبار الاستراتيجية على آخر 50 شمعة
+                print(f"\n{'='*60}")
+                print("🤖 تحليل إشارات التداول (آخر 50 شمعة):")
+                print(f"{'='*60}")
+                
+                buy_signals = 0
+                sell_signals = 0
+                
+                for i in range(max(0, len(data)-50), len(data)):
+                    current_data = data.iloc[:i+1]
+                    buy_signal, sell_signal, stop_loss, take_profit = bot.bnb_strategy(current_data)
+                    
+                    if buy_signal:
+                        buy_signals += 1
+                        print(f"📈 إشارة شراء عند: {current_data['timestamp'].iloc[-1].strftime('%Y-%m-%d %H:%M')} - السعر: {current_data['close'].iloc[-1]:.4f}")
+                    
+                    if sell_signal:
+                        sell_signals += 1
+                        print(f"📉 إشارة بيع عند: {current_data['timestamp'].iloc[-1].strftime('%Y-%m-%d %H:%M')} - السعر: {current_data['close'].iloc[-1]:.4f}")
+                
+                print(f"\n📊 إجمالي الإشارات:")
+                print(f"🟢 إشارات شراء: {buy_signals}")
+                print(f"🔴 إشارات بيع: {sell_signals}")
+                
+                # اختبار الاستراتيجية الحالية
+                buy_signal, sell_signal, stop_loss, take_profit = bot.bnb_strategy(data)
+                print(f"\n🎯 الإشارة الحالية:")
+                print(f"🟢 شراء: {buy_signal}")
+                print(f"🔴 بيع: {sell_signal}")
+                
+                if buy_signal:
+                    print(f"⛔ وقف الخسارة: {stop_loss:.4f}")
+                    print(f"🎯 جني الأرباح: {take_profit:.4f}")
+                    print(f"📊 نسبة المخاطرة/العائد: {((take_profit - latest['close']) / (latest['close'] - stop_loss)):.2f}:1")
+                
+                # تحليل الاتجاه
+                print(f"\n📊 تحليل الاتجاه:")
+                print(f"📈 السعر فوق EMA200: {latest['close'] > latest['ema200']}")
+                print(f"📈 اتجاه صاعد قوي: {latest['trend_strong']}")
+                print(f"📈 السعر فوق EMA50: {latest['price_above_ema50']}")
+                
+            # عرض تقرير الأداء
+            print(f"\n{'='*60}")
+            print("📈 تقرير الأداء:")
+            print(f"{'='*60}")
+            bot.send_performance_report()
+            
+            # اختبار إشعارات التلجرام (إذا كانت مفعلة)
+            if bot.notifier:
+                print(f"\n{'='*60}")
+                print("📨 اختبار إرسال إشعار Telegram...")
+                performance_msg = f"""
+🔧 <b>تقرير اختبار البوت الشامل</b>
+
+📊 البيانات المجمعة: {sum(len(d) for d in all_data.values())} صف
+💰 السعر الحالي: {data['close'].iloc[-1]:.4f} USDT
+📶 RSI الحالي: {latest['rsi']:.2f}
+📈 MACD: {latest['macd_hist']:.6f}
+
+📊 الإشارات في آخر 50 شمعة:
+🟢 شراء: {buy_signals}
+🔴 بيع: {sell_signals}
+
+🎯 الإشارة الحالية:
+{'🟢 شراء' if buy_signal else '🔴 بيع' if sell_signal else '⚪ محايد'}
+
+✅ اختبار البوت مكتمل بنجاح
+                """
+                bot.send_notification(performance_msg)
+                print("✅ تم إرسال رسالة الاختبار المفصلة")
+            
+            print(f"\n{'='*60}")
+            print("🎯 البوت جاهز للتشغيل الفعلي!")
+            print("للتشغيل الفعلي، قم بإزالة وضع الباكتستنغ وتأكد من صحة المفاتيح")
+            print(f"{'='*60}")
+        
     except Exception as e:
         logger.error(f"فشل تشغيل البوت: {e}")
         print(f"❌ فشل تشغيل البوت: {e}")
+        print("\n🔍 أسباب محتملة:")
+        print("1. مفاتيح API غير صحيحة")
+        print("2. مشكلة في الاتصال بالإنترنت")
+        print("3. IP غير مسموح به في Binance")
+        print("4. صلاحيات API غير كافية")
