@@ -1,13 +1,3 @@
-import requests
-
-def get_public_ip():
-    try:
-        response = requests.get('https://api.ipify.org?format=json', timeout=10)
-        return response.json()['ip']
-    except:
-        return "غير معروف"
-
-print(f"IP الخادم: {get_public_ip()}")
 import os
 import pandas as pd
 import numpy as np
@@ -19,6 +9,10 @@ import requests
 import logging
 import warnings
 warnings.filterwarnings('ignore')
+from dotenv import load_dotenv
+
+# تحميل متغيرات البيئة من ملف .env
+load_dotenv()
 
 # إعداد logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -45,41 +39,117 @@ class TelegramNotifier:
             logger.error(f"خطأ في إرسال رسالة Telegram: {e}")
 
 class BNB_Trading_Bot:
-    def __init__(self):
-        # الحصول على المفاتيح من متغيرات البيئة
-        api_key = os.environ.get('BINANCE_API_KEY')
-        api_secret = os.environ.get('BINANCE_API_SECRET')
-        telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-        telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+    def __init__(self, api_key=None, api_secret=None, telegram_token=None, telegram_chat_id=None):
+        # تهيئة notifier أولاً لتجنب الأخطاء
+        self.notifier = None
         
-        if not api_key or not api_secret:
-            raise ValueError("مفاتيح Binance غير موجودة في متغيرات البيئة")
-            
-        # تحديد وضع الاختبار بناءً على متغير البيئة
-        self.test_mode = os.environ.get('TEST_MODE', 'False').lower() == 'true'
+        # الحصول على المفاتيح من المعطيات أو من متغيرات البيئة
+        self.api_key = api_key or os.environ.get('BINANCE_API_KEY')
+        self.api_secret = api_secret or os.environ.get('BINANCE_API_SECRET')
+        telegram_token = telegram_token or os.environ.get('TELEGRAM_BOT_TOKEN')
+        telegram_chat_id = telegram_chat_id or os.environ.get('TELEGRAM_CHAT_ID')
         
-        if not self.test_mode:  # التداول الفعلي
-            self.client = Client(api_key, api_secret)
-            logger.info("وضع التداول الفعلي مفعّل")
-        else:
-            self.client = Client(api_key, api_secret, testnet=True)
-            logger.info("وضع الاختبار مفعّل")
+        # اختبار المفاتيح وطباعة سبب المشكلة
+        if not self.api_key or not self.api_secret:
+            error_msg = "❌ مفاتيح Binance غير موجودة"
+            logger.error(error_msg)
+            print("="*50)
+            print("أسباب المشكلة المحتملة:")
+            print("1. لم يتم توفير مفاتيح API في الكود")
+            print("2. لم يتم تعيين متغيرات البيئة BINANCE_API_KEY و BINANCE_API_SECRET")
+            print("3. ملف .env غير موجود أو غير صحيح")
+            print("="*50)
+            raise ValueError(error_msg)
             
-        self.fee_rate = 0.001  # عمولة Binance الأساسية
-        self.slippage = 0.0005
+        try:
+            # اتصال بالمنصة الفعلية فقط
+            self.client = Client(self.api_key, self.api_secret)
+            logger.info("✅ تم الاتصال بمنصة Binance الفعلية")
+                
+            # اختبار الاتصال فوراً
+            self.test_connection()
+                
+        except Exception as e:
+            error_msg = f"❌ فشل الاتصال بـ Binance: {e}"
+            logger.error(error_msg)
+            print("="*50)
+            print("أسباب فشل الاتصال:")
+            print("1. مفاتيح API غير صحيحة")
+            print("2. IP غير مسموح به في إعدادات Binance API")
+            print("3. مشكلة في الاتصال بالإنترنت")
+            print("4. الصلاحيات غير كافية (يجب تفعيل التداول)")
+            print("5. تأكد من استخدام مفاتيح Live للوضع الفعلي")
+            print("="*50)
+            raise ConnectionError(error_msg)
+            
+        self.fee_rate = 0.0005
+        self.slippage = 0.00015
         self.trades = []
         self.symbol = "BNBUSDT"
-        
-        # جلب الرصيد الابتدائي الحقيقي من المنصة
-        self.initial_balance = self.get_real_balance()
         
         # إعداد إشعارات Telegram إذا كانت المفاتيح متوفرة
         if telegram_token and telegram_chat_id:
             self.notifier = TelegramNotifier(telegram_token, telegram_chat_id)
-            self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\nالرصيد الافتتاحي: ${self.initial_balance:.2f}\nوضع التشغيل: {'فعلي' if not self.test_mode else 'اختبار'}")
+            logger.info("تم تهيئة إشعارات Telegram")
         else:
-            self.notifier = None
             logger.warning("مفاتيح Telegram غير موجودة، سيتم تعطيل الإشعارات")
+        
+        # جلب الرصيد الابتدائي (مع معالجة الأخطاء)
+        try:
+            self.initial_balance = self.get_real_balance()
+            success_msg = f"✅ تم تهيئة البوت بنجاح - الرصيد الابتدائي: ${self.initial_balance:.2f}"
+            logger.info(success_msg)
+            if self.notifier:
+                self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\n{success_msg}\nوضع التشغيل: فعلي")
+        except Exception as e:
+            logger.error(f"خطأ في جلب الرصيد الابتدائي: {e}")
+            self.initial_balance = 0
+
+    def test_connection(self):
+        """اختبار الاتصال بمنصة Binance"""
+        try:
+            # اختبار بسيط للاتصال
+            server_time = self.client.get_server_time()
+            logger.info(f"✅ الاتصال ناجح - وقت الخادم: {server_time['serverTime']}")
+            
+            # اختبار الحصول على معلومات الحساب
+            account_info = self.client.get_account()
+            logger.info("✅ جلب معلومات الحساب ناجح")
+            
+            # الحصول على IP الخادم
+            public_ip = self.get_public_ip()
+            logger.info(f"🌐 IP الخادم: {public_ip}")
+            
+            print("="*50)
+            print("✅ اختبار الاتصال ناجح!")
+            print("وضع التشغيل: فعلي")
+            print(f"IP الخادم: {public_ip}")
+            print("="*50)
+            
+            return True
+        except Exception as e:
+            logger.error(f"❌ فشل الاتصال: {e}")
+            
+            # الحصول على IP للتحقق منه
+            public_ip = self.get_public_ip()
+            print("="*50)
+            print("❌ فشل اختبار الاتصال!")
+            print(f"IP الخادم: {public_ip}")
+            print("يرجى التأكد من:")
+            print("1. إضافة هذا IP إلى القائمة البيضاء في Binance")
+            print("2. استخدام مفاتيح Live للوضع الفعلي")
+            print("3. تفعيل صلاحية 'التداول' في إعدادات API")
+            print("="*50)
+            
+            return False
+
+    def get_public_ip(self):
+        """الحصول على IP العام للخادم"""
+        try:
+            response = requests.get('https://api.ipify.org?format=json', timeout=10)
+            return response.json()['ip']
+        except:
+            return "غير معروف"
     
     def get_real_balance(self):
         """جلب الرصيد الحقيقي من منصة Binance"""
@@ -101,11 +171,6 @@ class BNB_Trading_Bot:
                         symbol = asset + 'USDT'
                         if symbol in price_dict:
                             total_balance += balance * price_dict[symbol]
-                        elif asset + 'BTC' in price_dict and 'BTCUSDT' in price_dict:
-                            # إذا لم يكن هناك زوج مباشر مع USDT
-                            btc_price = price_dict['BTCUSDT']
-                            asset_btc_price = price_dict[asset + 'BTC']
-                            total_balance += balance * asset_btc_price * btc_price
             
             return total_balance
         except Exception as e:
@@ -113,7 +178,7 @@ class BNB_Trading_Bot:
             logger.error(error_msg)
             if self.notifier:
                 self.notifier.send_message(error_msg)
-            return 0
+            raise
     
     def get_account_balance_details(self):
         """الحصول على تفاصيل الرصيد الحالي من حساب Binance"""
@@ -145,16 +210,17 @@ class BNB_Trading_Bot:
             self.notifier.send_message(message)
     
     def calculate_rsi(self, data, period=14):
+        """حساب RSI بنفس طريقة finaleth"""
         delta = data.diff()
         gain = (delta.where(delta > 0, 0)).fillna(0)
         loss = (-delta.where(delta < 0, 0)).fillna(0)
         
-        avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
-        avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
+        avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
         
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
-        return rsi
+        return rsi.fillna(50)
     
     def calculate_ma(self, data, period):
         return data.rolling(window=period).mean()
@@ -167,17 +233,28 @@ class BNB_Trading_Bot:
         return upper_band, sma, lower_band
     
     def calculate_atr(self, df, period=14):
+        """حساب ATR بنفس طريقة finaleth"""
         high = df["high"]
         low = df["low"]
         close = df["close"]
         prev_close = close.shift(1)
-        tr1 = high - low
+        tr1 = (high - low).abs()
         tr2 = (high - prev_close).abs()
         tr3 = (low - prev_close).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     
-    def get_historical_data(self, interval=Client.KLINE_INTERVAL_15MINUTE, lookback='500 hour ago UTC'):
+    def calculate_macd(self, series, fast=12, slow=26, signal=9):
+        """حساب MACD بنفس طريقة finaleth"""
+        ema_fast = series.ewm(span=fast, adjust=False).mean()
+        ema_slow = series.ewm(span=slow, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        sig = macd_line.ewm(span=signal, adjust=False).mean()
+        hist = macd_line - sig
+        return macd_line, sig, hist
+    
+    def get_historical_data(self, interval=Client.KLINE_INTERVAL_15MINUTE, lookback='2000 hour ago UTC'):
+        """جلب البيانات التاريخية بنفس طريقة finaleth"""
         try:
             klines = self.client.get_historical_klines(self.symbol, interval, lookback)
             if not klines:
@@ -199,14 +276,25 @@ class BNB_Trading_Bot:
                 self.send_notification(error_msg)
                 return None
             
-            # حساب المؤشرات
+            # حساب المؤشرات بنفس طريقة finaleth
             data['rsi'] = self.calculate_rsi(data['close'])
-            data['ma20'] = self.calculate_ma(data['close'], 20)
-            data['ma50'] = self.calculate_ma(data['close'], 50)
-            data['ma200'] = self.calculate_ma(data['close'], 200)
-            data['upper_bb'], data['ma20_bb'], data['lower_bb'] = self.calculate_bollinger_bands(data['close'])
             data['atr'] = self.calculate_atr(data)
-            data['volume_ma20'] = self.calculate_ma(data['volume'], 20)
+            data['ema200'] = data['close'].ewm(span=200, adjust=False).mean()
+            data['ema50'] = data['close'].ewm(span=50, adjust=False).mean()
+            data['ema20'] = data['close'].ewm(span=20, adjust=False).mean()
+            data['ema9'] = data['close'].ewm(span=9, adjust=False).mean()
+            data['vol_ma20'] = data['volume'].rolling(20).mean()
+            data['vol_ratio'] = data['volume'] / data['vol_ma20']
+            
+            # حساب MACD
+            macd_line, macd_sig, macd_hist = self.calculate_macd(data['close'])
+            data['macd'] = macd_line
+            data['macd_sig'] = macd_sig
+            data['macd_hist'] = macd_hist
+            
+            data['atr_ma20'] = data['atr'].rolling(20).mean()
+            data['trend_strong'] = (data['ema9'] > data['ema20']) & (data['ema20'] > data['ema50']) & (data['close'] > data['ema200'])
+            data['price_above_ema50'] = data['close'] > data['ema50']
             
             return data
         except Exception as e:
@@ -222,29 +310,26 @@ class BNB_Trading_Bot:
         latest = data.iloc[-1]
         prev = data.iloc[-2] if len(data) > 1 else latest
         
-        # شروط الشراء لـ BNB
-        rsi_condition = latest['rsi'] < 40
-        price_above_ma20 = latest['close'] > latest['ma20']
-        ma_trend = latest['ma20'] > latest['ma50']
-        bollinger_condition = latest['close'] < latest['lower_bb']
-        volume_condition = latest['volume'] > latest['volume_ma20'] * 0.8
+        # شروط الشراء لـ BNB - مطابقة لاستراتيجية finaleth
+        rsi_condition = latest['rsi'] >= 50 and latest['rsi'] <= 70
+        trend_condition = latest['trend_strong'] and latest['price_above_ema50']
+        macd_condition = latest['macd_hist'] > 0
+        volume_condition = latest['vol_ratio'] >= 1.0
         
         # شروط البيع لـ BNB
-        rsi_sell_condition = latest['rsi'] > 65
-        price_below_ma20 = latest['close'] < latest['ma20']
-        bollinger_sell_condition = latest['close'] > latest['upper_bb']
+        rsi_sell_condition = latest['rsi'] < 40 or latest['rsi'] > 75
+        macd_sell_condition = latest['macd_hist'] < 0
         
-        # إشارة الشراء (3 من 5 شروط)
-        buy_conditions = [rsi_condition, price_above_ma20, ma_trend, bollinger_condition, volume_condition]
-        buy_signal = sum(buy_conditions) >= 3
+        # إشارة الشراء (جميع الشروط)
+        buy_signal = all([rsi_condition, trend_condition, macd_condition, volume_condition])
         
-        # إشارة البيع (شرطين)
-        sell_conditions = [rsi_sell_condition, price_below_ma20, bollinger_sell_condition]
-        sell_signal = sum(sell_conditions) >= 2
+        # إشارة البيع (أي شرط)
+        sell_signal = any([rsi_sell_condition, macd_sell_condition])
         
-        # وقف الخسارة وجني الأرباح لـ BNB
-        stop_loss = 0.02  # 2%
-        take_profit = 0.035  # 3.5%
+        # وقف الخسارة وجني الأرباح - استخدام ATR مثل finaleth
+        atr_val = latest['atr']
+        stop_loss = latest['close'] - (3.0 * atr_val)  # ATR multiplier = 3.0
+        take_profit = latest['close'] + (3.0 * 3.0 * atr_val)  # RR = 3.0
         
         return buy_signal, sell_signal, stop_loss, take_profit
     
@@ -326,59 +411,15 @@ class BNB_Trading_Bot:
         
         # إذا كانت هناك إشارة شراء
         if buy_signal:
-            if not self.test_mode:  # التداول الفعلي
-                # تنفيذ صفقة حقيقية
-                success = self.execute_real_trade('buy')
-                return success
-            else:
-                # محاكاة الصفقة (للاختبار فقط)
-                total_balance, balances, _ = self.get_account_balance_details()
-                usdt_balance = balances.get('USDT', {}).get('free', 0) if balances else 0
-                
-                if usdt_balance > 10:
-                    quantity = (usdt_balance * (1 - self.fee_rate)) / current_price
-                    
-                    msg = f"✅ <b>إشارة شراء (اختبار)</b>\n\nالسعر: ${current_price:.4f}\nالكمية: {quantity:.4f} BNB\nالقيمة: ${usdt_balance:.2f}\nوقف الخسارة: {stop_loss*100:.1f}%\nجني الأرباح: {take_profit*100:.1f}%"
-                    self.send_notification(msg)
-                    
-                    trade = {
-                        'type': 'buy',
-                        'price': current_price,
-                        'quantity': quantity,
-                        'timestamp': datetime.now(),
-                        'balance': total_balance
-                    }
-                    self.trades.append(trade)
-                    return True
+            # تنفيذ صفقة حقيقية
+            success = self.execute_real_trade('buy')
+            return success
         
         # إذا كانت هناك إشارة بيع
         elif sell_signal:
-            if not self.test_mode:  # التداول الفعلي
-                # تنفيذ صفقة حقيقية
-                success = self.execute_real_trade('sell')
-                return success
-            else:
-                # محاكاة البيع (للاختبار فقط)
-                total_balance, balances, _ = self.get_account_balance_details()
-                bnb_balance = balances.get('BNB', {}).get('free', 0) if balances else 0
-                
-                if bnb_balance > 0.001:
-                    sell_value = bnb_balance * current_price
-                    profit_percent = ((current_price - self.entry_price) / self.entry_price) * 100 if hasattr(self, 'entry_price') else 0
-                    
-                    msg = f"🔻 <b>إشارة بيع (اختبار)</b>\n\nالسعر: ${current_price:.4f}\nالكمية: {bnb_balance:.4f} BNB\nالقيمة: ${sell_value:.2f}\nالربح/الخسارة: {profit_percent:.2f}%"
-                    self.send_notification(msg)
-                    
-                    trade = {
-                        'type': 'sell',
-                        'price': current_price,
-                        'quantity': bnb_balance,
-                        'timestamp': datetime.now(),
-                        'balance': total_balance,
-                        'profit_percent': profit_percent
-                    }
-                    self.trades.append(trade)
-                    return True
+            # تنفيذ صفقة حقيقية
+            success = self.execute_real_trade('sell')
+            return success
         
         return False
     
@@ -457,7 +498,11 @@ class BNB_Trading_Bot:
 # تشغيل البوت
 if __name__ == "__main__":
     try:
+        print("🚀 بدء تشغيل بوت تداول BNB الفعلي...")
+        print("📝 وضع التشغيل: فعلي")
+        
         bot = BNB_Trading_Bot()
         bot.run()
     except Exception as e:
         logger.error(f"فشل تشغيل البوت: {e}")
+        print(f"❌ فشل تشغيل البوت: {e}")
