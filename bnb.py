@@ -277,7 +277,7 @@ class BNB_Trading_Bot:
         latest = data.iloc[-1]
         prev = data.iloc[-2]
     
-        # شروط الشراء المعدلة (3 شروط)
+        # شروط الشراء (2 من 3 فقط)
         buy_condition_1 = 30 <= latest['rsi'] <= 35  # RSI بين 30-35
         buy_condition_2 = latest['macd'] > latest['macd_sig'] and latest['macd_hist'] > 0.05
         buy_condition_3 = latest['close'] > latest['ema20'] and latest['ema9'] > latest['ema20']
@@ -286,8 +286,9 @@ class BNB_Trading_Bot:
         sell_condition_1 = latest['rsi'] > 70 or latest['rsi'] < 25
         sell_condition_2 = latest['macd_hist'] < -0.05 or latest['close'] < latest['ema9']
     
-        # إشارة الشراء النهائية (3 شروط)
-        buy_signal = all([buy_condition_1, buy_condition_2, buy_condition_3])
+        # إشارة الشراء النهائية (2 من 3 شروط)
+        buy_conditions = [buy_condition_1, buy_condition_2, buy_condition_3]
+        buy_signal = sum(buy_conditions) >= 2  # شرطين على الأقل
     
         # إشارة البيع النهائية (2 شرط)
         sell_signal = any([sell_condition_1, sell_condition_2])
@@ -314,7 +315,7 @@ class BNB_Trading_Bot:
             return False, 0
     
     def execute_real_trade(self, signal_type, current_price, stop_loss, take_profit):
-        """تنفيذ صفقة حقيقية مع أوامر وقف الخسارة وجني الأرباح"""
+        """تنفيذ صفقة حقيقية مع أوامر وقف الخسارة وجني الأرباح على المنصة"""
         try:
             # التحقق من الرصيد قبل التنفيذ
             can_trade, usdt_balance = self.check_balance_before_trade(self.trade_size)
@@ -343,17 +344,6 @@ class BNB_Trading_Bot:
                     quantity=quantity
                 )
                 
-                # حفظ تفاصيل الصفقة النشطة
-                trade_id = f"trade_{int(time.time())}"
-                self.active_trades[trade_id] = {
-                    'entry_price': current_price,
-                    'quantity': quantity,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit,
-                    'entry_time': datetime.now(),
-                    'type': 'long'
-                }
-                
                 # إرسال إشعار بالشراء
                 msg = f"✅ <b>تم الشراء فعلياً</b>\n\n"
                 msg += f"السعر: ${current_price:.4f}\n"
@@ -363,6 +353,36 @@ class BNB_Trading_Bot:
                 msg += f"جني الأرباح: ${take_profit:.4f}\n"
                 msg += f"الرصيد المتبقي: ${usdt_balance - self.trade_size:.2f}"
                 self.send_notification(msg)
+                
+                # وضع أوامر OCO (وقف خسارة وجني أرباح) على المنصة
+                try:
+                    oco_order = self.client.order_oco_sell(
+                        symbol=self.symbol,
+                        quantity=quantity,
+                        stopPrice=round(stop_loss, 4),
+                        stopLimitPrice=round(stop_loss, 4),
+                        price=round(take_profit, 4),
+                        stopLimitTimeInForce='GTC'
+                    )
+                    
+                    msg = f"📊 <b>تم وضع أوامر الوقف والأرباح على المنصة</b>\n\n"
+                    msg += f"وقف الخسارة: ${stop_loss:.4f}\n"
+                    msg += f"جني الأرباح: ${take_profit:.4f}\n"
+                    msg += f"الكمية: {quantity:.4f} BNB"
+                    self.send_notification(msg)
+                    
+                except Exception as e:
+                    error_msg = f"⚠️ فشل وضع أوامر الوقف على المنصة: {e}"
+                    self.send_notification(error_msg)
+                    # محاولة البيع يدوياً إذا فشل الأمر OCO
+                    try:
+                        self.client.order_market_sell(
+                            symbol=self.symbol,
+                            quantity=quantity
+                        )
+                        self.send_notification("⚠️ تم البيع فورياً بسبب فشل وضع أوامر الوقف")
+                    except:
+                        pass
                 
                 return True
                 
@@ -391,9 +411,6 @@ class BNB_Trading_Bot:
                     quantity=quantity
                 )
                 
-                # إزالة الصفقات النشطة
-                self.active_trades.clear()
-                
                 # إرسال إشعار بالبيع
                 expected_proceeds = quantity * current_price
                 msg = f"🔻 <b>تم البيع فعلياً</b>\n\n"
@@ -401,6 +418,18 @@ class BNB_Trading_Bot:
                 msg += f"الكمية: {quantity:.4f} BNB\n"
                 msg += f"القيمة: ${expected_proceeds:.2f}"
                 self.send_notification(msg)
+                
+                # إلغاء أي أوامر OCO موجودة
+                try:
+                    open_orders = self.client.get_open_orders(symbol=self.symbol)
+                    for open_order in open_orders:
+                        if open_order['type'] == 'STOP_LOSS_LIMIT' or open_order['type'] == 'OCO':
+                            self.client.cancel_order(
+                                symbol=self.symbol,
+                                orderId=open_order['orderId']
+                            )
+                except Exception as e:
+                    logger.error(f"خطأ في إلغاء الأوامر المفتوحة: {e}")
                 
                 return True
                 
@@ -411,24 +440,7 @@ class BNB_Trading_Bot:
     
     def check_active_trades(self, current_price):
         """التحقق من أوامر وقف الخسارة وجني الأرباح للصفقات النشطة"""
-        if not self.active_trades:
-            return False
-        
-        for trade_id, trade_info in list(self.active_trades.items()):
-            # التحقق من وقف الخسارة
-            if current_price <= trade_info['stop_loss']:
-                self.send_notification(f"🛑 <b>وقف خسارة</b>\n\nالسعر الحالي: ${current_price:.4f}\nوقف الخسارة: ${trade_info['stop_loss']:.4f}")
-                self.execute_real_trade('sell', current_price, 0, 0)
-                self.active_trades.pop(trade_id, None)
-                return True
-            
-            # التحقق من جني الأرباح
-            if current_price >= trade_info['take_profit']:
-                self.send_notification(f"🎯 <b>جني أرباح</b>\n\nالسعر الحالي: ${current_price:.4f}\nجني الأرباح: ${trade_info['take_profit']:.4f}")
-                self.execute_real_trade('sell', current_price, 0, 0)
-                self.active_trades.pop(trade_id, None)
-                return True
-        
+        # لم نعد بحاجة لهذه الوظيفة لأن الأوامر على المنصة
         return False
     
     def execute_trade(self):
@@ -440,10 +452,6 @@ class BNB_Trading_Bot:
         latest = data.iloc[-1]
         current_price = latest['close']
         
-        # التحقق أولاً من أوامر وقف الخسارة وجني الأرباح
-        if self.check_active_trades(current_price):
-            return True
-        
         # إذا كانت هناك إشارة شراء والرصيد كافي
         if buy_signal:
             can_trade, usdt_balance = self.check_balance_before_trade(self.trade_size)
@@ -453,10 +461,13 @@ class BNB_Trading_Bot:
             else:
                 self.send_notification(f"⚠️ إشارة شراء ولكن الرصيد غير كافي. المطلوب: ${self.trade_size}، المتاح: ${usdt_balance:.2f}")
         
-        # إذا كانت هناك إشارة بيع وهناك صفقات نشطة
-        elif sell_signal and self.active_trades:
-            success = self.execute_real_trade('sell', current_price, 0, 0)
-            return success
+        # إذا كانت هناك إشارة بيع
+        elif sell_signal:
+            total_balance, balances, _ = self.get_account_balance_details()
+            bnb_balance = balances.get('BNB', {}).get('free', 0)
+            if bnb_balance > 0.001:
+                success = self.execute_real_trade('sell', current_price, 0, 0)
+                return success
         
         return False
     
@@ -482,7 +493,6 @@ class BNB_Trading_Bot:
             message += f"الرصيد الابتدائي: ${self.initial_balance:.2f}\n"
             message += f"الرصيد الحالي: ${total_balance:.2f}\n"
             message += f"الأرباح/الخسائر: ${profit_loss:.2f} ({profit_loss_percent:+.2f}%)\n"
-            message += f"الصفقات النشطة: {len(self.active_trades)}\n"
             message += f"حجم الصفقة: ${self.trade_size}\n\n"
             message += f"<b>تفاصيل الرصيد:</b>\n{balance_details}"
             
