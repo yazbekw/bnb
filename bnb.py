@@ -12,6 +12,7 @@ warnings.filterwarnings('ignore')
 from dotenv import load_dotenv
 from flask import Flask
 import threading
+import json
 
 # تحميل متغيرات البيئة
 load_dotenv()
@@ -27,12 +28,28 @@ def health_check():
 def status():
     return {'status': 'running', 'bot': 'BNB Trading Bot', 'time': datetime.now().isoformat()}
 
+@app.route('/recent_trades')
+def recent_trades():
+    try:
+        bot = BNB_Trading_Bot()
+        report = bot.generate_12h_trading_report()
+        return report
+    except Exception as e:
+        return {'error': str(e)}
+
 def run_flask_app():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
 
 # إعداد logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot_activity.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class TelegramNotifier:
@@ -43,6 +60,7 @@ class TelegramNotifier:
     
     def send_message(self, message):
         try:
+            logger.info(f"محاولة إرسال رسالة إلى Telegram: {message}")
             url = f"{self.base_url}/sendMessage"
             payload = {
                 'chat_id': self.chat_id,
@@ -51,13 +69,22 @@ class TelegramNotifier:
             }
             response = requests.post(url, data=payload, timeout=10)
             if response.status_code != 200:
-                logger.error(f"فشل إرسال رسالة Telegram: {response.text}")
+                error_msg = f"فشل إرسال رسالة Telegram: {response.text}"
+                logger.error(error_msg)
+                return False
+            else:
+                logger.info("تم إرسال الرسالة إلى Telegram بنجاح")
+                return True
         except Exception as e:
-            logger.error(f"خطأ في إرسال رسالة Telegram: {e}")
+            error_msg = f"خطأ في إرسال رسالة Telegram: {e}"
+            logger.error(error_msg)
+            return False
 
 class BNB_Trading_Bot:
     def __init__(self, api_key=None, api_secret=None, telegram_token=None, telegram_chat_id=None):
         self.notifier = None
+        self.trade_history = []
+        self.load_trade_history()
         
         self.api_key = api_key or os.environ.get('BINANCE_API_KEY')
         self.api_secret = api_secret or os.environ.get('BINANCE_API_SECRET')
@@ -86,19 +113,13 @@ class BNB_Trading_Bot:
         self.base_trade_size = 7
         self.active_trades = {}
         
-        # إعدادات إدارة الأوامر
-        self.MAX_ALGO_ORDERS = 20  # زيادة الحد لأننا نستخدم أوامر منفصلة
+        # إعدادات إدارة الأوامر - تم التحديث إلى 10 كما هو الحقيقي
+        self.MAX_ALGO_ORDERS = 10
         self.ORDERS_TO_CANCEL = 2
         
-        # إعدادات حجم الصفقة المتدرج
-        self.MIN_TRADE_SIZE = 3
+        # إعدادات حجم الصفقة المتدرج - تم التحديث لتبدأ من 5 دولارات
+        self.MIN_TRADE_SIZE = 5
         self.MAX_TRADE_SIZE = 15
-        
-        # الحصول على معلومات الرمز لمعرفة الحدود
-        self.symbol_info = self.get_symbol_info()
-        self.min_notional = float([f['minNotional'] for f in self.symbol_info['filters'] if f['filterType'] == 'NOTIONAL'][0])
-        self.step_size = float([f['stepSize'] for f in self.symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
-        self.tick_size = float([f['tickSize'] for f in self.symbol_info['filters'] if f['filterType'] == 'PRICE_FILTER'][0])
         
         if telegram_token and telegram_chat_id:
             self.notifier = TelegramNotifier(telegram_token, telegram_chat_id)
@@ -111,20 +132,81 @@ class BNB_Trading_Bot:
             success_msg = f"✅ تم تهيئة البوت بنجاح - الرصيد الابتدائي: ${self.initial_balance:.2f}"
             logger.info(success_msg)
             if self.notifier:
-                self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\n{success_msg}\nحجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\nالحد الأدنى للقيمة: ${self.min_notional}")
+                self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\n{success_msg}\nحجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\nالحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}")
         except Exception as e:
             logger.error(f"خطأ في جلب الرصيد الابتدائي: {e}")
             self.initial_balance = 0
 
-    def get_symbol_info(self):
-        """الحصول على معلومات الرمز مرة واحدة عند التهيئة"""
+    def load_trade_history(self):
+        """تحميل تاريخ الصفقات من ملف"""
         try:
-            info = self.client.get_symbol_info(self.symbol)
-            logger.info(f"✅ تم جلب معلومات الرمز: {self.symbol}")
-            return info
+            if os.path.exists('trade_history.json'):
+                with open('trade_history.json', 'r', encoding='utf-8') as f:
+                    self.trade_history = json.load(f)
         except Exception as e:
-            logger.error(f"❌ خطأ في جلب معلومات الرمز: {e}")
-            return None
+            logger.error(f"خطأ في تحميل تاريخ الصفقات: {e}")
+            self.trade_history = []
+
+    def save_trade_history(self):
+        """حفظ تاريخ الصفقات إلى ملف"""
+        try:
+            with open('trade_history.json', 'w', encoding='utf-8') as f:
+                json.dump(self.trade_history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"خطأ في حفظ تاريخ الصفقات: {e}")
+
+    def add_trade_record(self, trade_type, quantity, price, trade_size, signal_strength, order_id=None, status="executed"):
+        """إضافة سجل صفقة جديدة"""
+        trade_record = {
+            'timestamp': datetime.now().isoformat(),
+            'type': trade_type,
+            'quantity': quantity,
+            'price': price,
+            'trade_size': trade_size,
+            'signal_strength': signal_strength,
+            'order_id': order_id,
+            'status': status
+        }
+        self.trade_history.append(trade_record)
+        self.save_trade_history()
+
+    def generate_12h_trading_report(self):
+        """إنشاء تقرير التداول لآخر 12 ساعة"""
+        try:
+            twelve_hours_ago = datetime.now() - timedelta(hours=12)
+            recent_trades = [
+                trade for trade in self.trade_history 
+                if datetime.fromisoformat(trade['timestamp']) >= twelve_hours_ago
+            ]
+            
+            if not recent_trades:
+                return {"message": "لا توجد صفقات في آخر 12 ساعة"}
+            
+            # حساب الإحصائيات
+            buy_trades = [t for t in recent_trades if t['type'] == 'buy']
+            sell_trades = [t for t in recent_trades if t['type'] == 'sell']
+            
+            total_buy_size = sum(t['trade_size'] for t in buy_trades)
+            total_sell_size = sum(t['trade_size'] for t in sell_trades)
+            avg_buy_strength = np.mean([t['signal_strength'] for t in buy_trades]) if buy_trades else 0
+            avg_sell_strength = np.mean([t['signal_strength'] for t in sell_trades]) if sell_trades else 0
+            
+            report = {
+                "period": "آخر 12 ساعة",
+                "total_trades": len(recent_trades),
+                "buy_trades": len(buy_trades),
+                "sell_trades": len(sell_trades),
+                "total_buy_size": round(total_buy_size, 2),
+                "total_sell_size": round(total_sell_size, 2),
+                "avg_buy_signal_strength": round(avg_buy_strength, 1),
+                "avg_sell_signal_strength": round(avg_sell_strength, 1),
+                "recent_trades": recent_trades[-10:]  # آخر 10 صفقات فقط
+            }
+            
+            return report
+        except Exception as e:
+            logger.error(f"خطأ في إنشاء تقرير التداول: {e}")
+            return {"error": str(e)}
 
     def test_connection(self):
         try:
@@ -142,7 +224,7 @@ class BNB_Trading_Bot:
             print("وضع التشغيل: فعلي")
             print(f"IP الخادم: {public_ip}")
             print(f"حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}")
-            print(f"الحد الأدنى للقيمة: ${self.min_notional}")
+            print(f"الحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}")
             print("="*50)
             
             return True
@@ -206,30 +288,30 @@ class BNB_Trading_Bot:
     def send_notification(self, message):
         logger.info(message)
         if self.notifier:
-            self.notifier.send_message(message)
+            success = self.notifier.send_message(message)
+            if not success:
+                logger.error("فشل إرسال الإشعار إلى Telegram")
+            return success
+        return False
     
-    def format_quantity(self, quantity):
-        """تقريب الكمية حسب stepSize"""
-        precision = len(str(self.step_size).split('.')[1].rstrip('0'))
-        rounded_quantity = round(quantity - (quantity % self.step_size), precision)
-        return max(rounded_quantity, 0)  # التأكد من عدم كونها سالبة
-    
-    def format_price(self, price):
-        """تقريب السعر حسب tickSize"""
-        precision = len(str(self.tick_size).split('.')[1].rstrip('0'))
-        rounded_price = round(price / self.tick_size) * self.tick_size
-        return round(rounded_price, precision)
-    
-    def check_notional(self, quantity, price):
-        """التحقق من الحد الأدنى للقيمة (NOTIONAL)"""
-        notional_value = quantity * price
-        return notional_value >= self.min_notional
+    def format_price(self, price, symbol):
+        """تقريب السعر حسب متطلبات Binance"""
+        try:
+            info = self.client.get_symbol_info(symbol)
+            price_filter = [f for f in info['filters'] if f['filterType'] == 'PRICE_FILTER'][0]
+            tick_size = float(price_filter['tickSize'])
+            
+            formatted_price = round(price / tick_size) * tick_size
+            return round(formatted_price, 8)
+        except Exception as e:
+            logger.error(f"خطأ في تقريب السعر: {e}")
+            return round(price, 4)
     
     def get_algo_orders_count(self, symbol):
         """الحصول على عدد الأوامر الآلية الحالية"""
         try:
             open_orders = self.client.get_open_orders(symbol=symbol)
-            algo_orders = [o for o in open_orders if o['type'] in ['STOP_LOSS_LIMIT', 'TAKE_PROFIT_LIMIT']]
+            algo_orders = [o for o in open_orders if o['type'] in ['STOP_LOSS_LIMIT', 'TAKE_PROFIT_LIMIT', 'OCO']]
             return len(algo_orders)
         except Exception as e:
             logger.error(f"خطأ في جلب عدد الأوامر الآلية: {e}")
@@ -242,7 +324,7 @@ class BNB_Trading_Bot:
             algo_orders = []
             
             for order in open_orders:
-                if order['type'] in ['STOP_LOSS_LIMIT', 'TAKE_PROFIT_LIMIT']:
+                if order['type'] in ['STOP_LOSS_LIMIT', 'TAKE_PROFIT_LIMIT', 'OCO']:
                     order_time = datetime.fromtimestamp(order['time'] / 1000)
                     algo_orders.append({
                         'orderId': order['orderId'],
@@ -265,6 +347,18 @@ class BNB_Trading_Bot:
                     cancelled_count += 1
                     cancelled_info.append(f"{algo_orders[i]['type']} - {algo_orders[i]['price']}")
                     logger.info(f"تم إلغاء الأمر القديم: {algo_orders[i]['orderId']}")
+                    
+                    # إضافة سجل للإلغاء
+                    self.add_trade_record(
+                        trade_type="cancel",
+                        quantity=0,
+                        price=0,
+                        trade_size=0,
+                        signal_strength=0,
+                        order_id=algo_orders[i]['orderId'],
+                        status="cancelled"
+                    )
+                    
                 except Exception as e:
                     logger.error(f"خطأ في إلغاء الأمر {algo_orders[i]['orderId']}: {e}")
             
@@ -308,6 +402,7 @@ class BNB_Trading_Bot:
         score = 0
         
         if signal_type == 'buy':
+            # تقييم قوة شراء
             if 25 <= latest['rsi'] <= 30: score += 30
             elif 30 < latest['rsi'] <= 35: score += 15
             
@@ -323,7 +418,8 @@ class BNB_Trading_Bot:
             if latest['vol_ratio'] > 2.5: score += 10
             elif latest['vol_ratio'] > 1.5: score += 5
         
-        else:
+        else:  # signal_type == 'sell'
+            # تقييم قوة بيع
             if latest['rsi'] > 75: score += 35
             elif latest['rsi'] > 70: score += 20
             elif latest['rsi'] < 25: score += 30
@@ -340,15 +436,15 @@ class BNB_Trading_Bot:
         return min(score, 100)
     
     def calculate_dynamic_size(self, signal_strength):
-        """حساب حجم الصفقة المتدرج من 3$ إلى 15$"""
-        if signal_strength >= 90:
-            return self.MAX_TRADE_SIZE
-        elif signal_strength >= 70:
-            return self.MAX_TRADE_SIZE * 0.6
-        elif signal_strength >= 50:
-            return self.MAX_TRADE_SIZE * 0.4
-        else:
-            return self.MIN_TRADE_SIZE
+        """حساب حجم الصفقة المتدرج من 5$ إلى 15$ (تم التحديث)"""
+        if signal_strength >= 90:    # Level 4 - قوية جداً
+            return self.MAX_TRADE_SIZE          # 15$
+        elif signal_strength >= 70:  # Level 3 - قوية
+            return 11                            # 11$ (تم التحديث من 9)
+        elif signal_strength >= 50:  # Level 2 - متوسطة
+            return 8                             # 8$ (تم التحديث من 6)
+        else:                        # Level 1 - ضعيفة
+            return self.MIN_TRADE_SIZE          # 5$ (تم التحديث من 3)
     
     def get_strength_level(self, strength):
         """الحصول على اسم مستوى القوة"""
@@ -451,18 +547,23 @@ class BNB_Trading_Bot:
         latest = data.iloc[-1]
         prev = data.iloc[-2]
     
+        # شروط الشراء (2 من 3 فقط)
         buy_condition_1 = 30 <= latest['rsi'] <= 35
         buy_condition_2 = latest['macd'] > latest['macd_sig'] and latest['macd_hist'] > 0.05
         buy_condition_3 = latest['close'] > latest['ema20'] and latest['ema9'] > latest['ema20']
     
+        # شروط البيع
         sell_condition_1 = latest['rsi'] > 70 or latest['rsi'] < 25
         sell_condition_2 = latest['macd_hist'] < -0.05 or latest['close'] < latest['ema9']
     
+        # إشارة الشراء النهائية (2 من 3 شروط)
         buy_conditions = [buy_condition_1, buy_condition_2, buy_condition_3]
         buy_signal = sum(buy_conditions) >= 2
     
+        # إشارة البيع النهائية
         sell_signal = any([sell_condition_1, sell_condition_2])
     
+        # إدارة المخاطر
         atr_val = latest['atr']
         stop_loss = latest['close'] - (2.5 * atr_val)
         take_profit = latest['close'] + (3.5 * atr_val)
@@ -486,23 +587,24 @@ class BNB_Trading_Bot:
     def execute_real_trade(self, signal_type, current_price, stop_loss, take_profit, trade_size):
         """تنفيذ صفقة حقيقية"""
         try:
-            can_trade, usdt_balance = self.check_balance_before_trade(trade_size)
-            
-            if not can_trade:
-                self.send_notification(f"⚠️ رصيد غير كافي للصفقة. المطلوب: ${trade_size:.2f}، المتاح: ${usdt_balance:.2f}")
-                return False
+            logger.info(f"بدء تنفيذ صفقة {signal_type} بحجم {trade_size}$")
             
             if signal_type == 'buy':
+                can_trade, usdt_balance = self.check_balance_before_trade(trade_size)
+                
+                if not can_trade:
+                    self.send_notification(f"⚠️ رصيد غير كافي للصفقة. المطلوب: ${trade_size:.2f}، المتاح: ${usdt_balance:.2f}")
+                    return False
+                
                 quantity = trade_size / current_price
-                quantity = self.format_quantity(quantity)
+                
+                info = self.client.get_symbol_info(self.symbol)
+                step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
+                precision = len(str(step_size).split('.')[1].rstrip('0'))
+                quantity = round(quantity - (quantity % step_size), precision)
                 
                 if quantity <= 0:
                     self.send_notification("⚠️ الكمية غير صالحة للشراء")
-                    return False
-                
-                # التحقق من NOTIONAL قبل الشراء
-                if not self.check_notional(quantity, current_price):
-                    self.send_notification(f"⚠️ القيمة أقل من الحد الأدنى (${self.min_notional})")
                     return False
                 
                 order = self.client.order_market_buy(
@@ -510,63 +612,98 @@ class BNB_Trading_Bot:
                     quantity=quantity
                 )
                 
-                formatted_stop_loss = self.format_price(stop_loss)
-                formatted_take_profit = self.format_price(take_profit)
-                formatted_current = self.format_price(current_price)
+                # إضافة سجل للصفقة
+                self.add_trade_record(
+                    trade_type="buy",
+                    quantity=quantity,
+                    price=current_price,
+                    trade_size=trade_size,
+                    signal_strength=self.calculate_signal_strength(self.get_historical_data(), 'buy'),
+                    order_id=order.get('orderId', 'N/A')
+                )
+                
+                formatted_stop_loss = self.format_price(stop_loss, self.symbol)
+                formatted_take_profit = self.format_price(take_profit, self.symbol)
+                formatted_current = self.format_price(current_price, self.symbol)
                 
                 if not self.manage_order_space(self.symbol):
                     self.send_notification("❌ لا يمكن وضع أوامر الوقف - المساحة ممتلئة")
                     try:
-                        self.client.order_market_sell(
+                        sell_order = self.client.order_market_sell(
                             symbol=self.symbol,
                             quantity=quantity
                         )
                         self.send_notification("⚠️ تم البيع فورياً بسبب عدم إمكانية وضع وقف")
+                        
+                        # إضافة سجل للبيع الإجباري
+                        self.add_trade_record(
+                            trade_type="sell_forced",
+                            quantity=quantity,
+                            price=current_price,
+                            trade_size=quantity * current_price,
+                            signal_strength=0,
+                            order_id=sell_order.get('orderId', 'N/A'),
+                            status="forced"
+                        )
+                        
                     except Exception as sell_error:
                         self.send_notification(f"❌ فشل البيع أيضاً: {sell_error}")
                     return False
                 
-                # استخدام أوامر منفصلة بدل OCO
                 try:
-                    # أمر وقف الخسارة
-                    stop_order = self.client.order_stop_loss_limit(
+                    oco_order = self.client.order_oco_sell(
                         symbol=self.symbol,
                         quantity=quantity,
                         stopPrice=formatted_stop_loss,
-                        price=formatted_stop_loss,
-                        timeInForce='GTC'
-                    )
-                    
-                    # أمر جني الأرباح
-                    profit_order = self.client.order_limit_sell(
-                        symbol=self.symbol,
-                        quantity=quantity,
+                        stopLimitPrice=formatted_stop_loss,
                         price=formatted_take_profit,
-                        timeInForce='GTC'
+                        stopLimitTimeInForce='GTC'
                     )
-                    
-                    msg = f"📊 <b>تم وضع أوامر منفصلة</b>\n\n"
-                    msg += f"وقف الخسارة: ${formatted_stop_loss:.4f}\n"
-                    msg += f"جني الأرباح: ${formatted_take_profit:.4f}\n"
-                    msg += f"الكمية: {quantity:.4f} BNB"
-                    self.send_notification(msg)
                     
                 except Exception as e:
-                    error_msg = f"⚠️ فشل وضع أوامر الوقف: {e}"
+                    error_msg = f"⚠️ فشل وضع أوامر الوقف على المنصة: {e}"
                     self.send_notification(error_msg)
                     
-                    # حاول وضع أمر وقف فقط
                     try:
-                        stop_order = self.client.order_stop_loss_limit(
+                        stop_loss_order = self.client.order_stop_loss_limit(
                             symbol=self.symbol,
                             quantity=quantity,
                             stopPrice=formatted_stop_loss,
                             price=formatted_stop_loss,
                             timeInForce='GTC'
                         )
-                        self.send_notification("✅ تم وضع وقف الخسارة فقط")
-                    except:
-                        self.send_notification("❌ فشل وضع أي أوامر وقف")
+                        
+                        take_profit_order = self.client.order_limit_sell(
+                            symbol=self.symbol,
+                            quantity=quantity,
+                            price=formatted_take_profit,
+                            timeInForce='GTC'
+                        )
+                        
+                    except Exception as alt_error:
+                        error_msg = f"❌ فشل وضع الأوامر المنفصلة أيضاً: {alt_error}"
+                        self.send_notification(error_msg)
+                        
+                        try:
+                            sell_order = self.client.order_market_sell(
+                                symbol=self.symbol,
+                                quantity=quantity
+                            )
+                            self.send_notification("⚠️ تم البيع فورياً بسبب فشل وضع أوامر الوقف")
+                            
+                            # إضافة سجل للبيع الإجباري
+                            self.add_trade_record(
+                                trade_type="sell_forced",
+                                quantity=quantity,
+                                price=current_price,
+                                trade_size=quantity * current_price,
+                                signal_strength=0,
+                                order_id=sell_order.get('orderId', 'N/A'),
+                                status="forced"
+                            )
+                            
+                        except Exception as sell_error:
+                            self.send_notification(f"❌ فشل البيع أيضاً: {sell_error}")
                 
                 return True
                 
@@ -578,15 +715,21 @@ class BNB_Trading_Bot:
                     self.send_notification("⚠️ رصيد BNB غير كافي للبيع")
                     return False
                 
-                quantity = self.format_quantity(bnb_balance)
+                # حساب الكمية بناء على حجم الصفقة المحدد وليس كل الرصيد
+                quantity_to_sell = trade_size / current_price
+                
+                # لا تبيع أكثر من الرصيد المتاح
+                quantity_to_sell = min(quantity_to_sell, bnb_balance)
+                
+                info = self.client.get_symbol_info(self.symbol)
+                step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
+                precision = len(str(step_size).split('.')[1].rstrip('0'))
+                
+                # تقريب الكمية حسب متطلبات Binance
+                quantity = round(quantity_to_sell - (quantity_to_sell % step_size), precision)
                 
                 if quantity <= 0:
                     self.send_notification("⚠️ الكمية غير صالحة للبيع")
-                    return False
-                
-                # التحقق من NOTIONAL قبل البيع
-                if not self.check_notional(quantity, current_price):
-                    self.send_notification(f"⚠️ القيمة أقل من الحد الأدنى (${self.min_notional})")
                     return False
                 
                 order = self.client.order_market_sell(
@@ -594,11 +737,23 @@ class BNB_Trading_Bot:
                     quantity=quantity
                 )
                 
+                # إضافة سجل للصفقة
+                self.add_trade_record(
+                    trade_type="sell",
+                    quantity=quantity,
+                    price=current_price,
+                    trade_size=trade_size,
+                    signal_strength=self.calculate_signal_strength(self.get_historical_data(), 'sell'),
+                    order_id=order.get('orderId', 'N/A')
+                )
+                
+                expected_proceeds = quantity * current_price
                 return True
                 
         except Exception as e:
             error_msg = f"❌ خطأ في تنفيذ الصفقة: {e}"
             self.send_notification(error_msg)
+            logger.error(error_msg)
             return False
     
     def execute_trade(self):
@@ -682,6 +837,14 @@ class BNB_Trading_Bot:
             if bnb_price:
                 message += f"\nسعر BNB الحالي: ${bnb_price:.4f}"
             
+            # إضافة تقرير آخر 12 ساعة
+            report_12h = self.generate_12h_trading_report()
+            if 'total_trades' in report_12h and report_12h['total_trades'] > 0:
+                message += f"\n\n📈 <b>آخر 12 ساعة:</b>"
+                message += f"\nإجمالي الصفقات: {report_12h['total_trades']}"
+                message += f"\nصفقات شراء: {report_12h['buy_trades']} (${report_12h['total_buy_size']})"
+                message += f"\nصفقات بيع: {report_12h['sell_trades']} (${report_12h['total_sell_size']})"
+            
             self.send_notification(message)
             
         except Exception as e:
@@ -693,7 +856,7 @@ class BNB_Trading_Bot:
         flask_thread.start()
         
         interval_minutes = 15
-        self.send_notification(f"🚀 بدء تشغيل بوت تداول BNB\n\nسيعمل البوت على فحص السوق كل {interval_minutes} دقيقة\nنطاق حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\nالحد الأدنى للقيمة: ${self.min_notional}")
+        self.send_notification(f"🚀 بدء تشغيل بوت تداول BNB\n\nسيعمل البوت على فحص السوق كل {interval_minutes} دقيقة\nنطاق حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\nالحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}")
         
         self.send_performance_report()
         
@@ -713,6 +876,7 @@ class BNB_Trading_Bot:
             except Exception as e:
                 error_msg = f"❌ خطأ غير متوقع في التشغيل: {e}"
                 self.send_notification(error_msg)
+                logger.error(error_msg)
                 time.sleep(300)
 
 if __name__ == "__main__":
