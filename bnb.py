@@ -544,6 +544,7 @@ class BNB_Trading_Bot:
         hist = macd_line - sig
         return macd_line, sig, hist
     
+    
     def get_historical_data(self, interval=Client.KLINE_INTERVAL_15MINUTE, lookback='2000 hour ago UTC'):
         try:
             klines = self.client.get_historical_klines(self.symbol, interval, lookback)
@@ -551,45 +552,48 @@ class BNB_Trading_Bot:
                 error_msg = f"⚠️ لا توجد بيانات لـ {self.symbol}"
                 self.send_notification(error_msg)
                 return None
-                
+            
             data = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                                'close_time', 'quote_asset_volume', 'number_of_trades', 
-                                                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+                                            'close_time', 'quote_asset_volume', 'number_of_trades', 
+                                            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
             data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 data[col] = pd.to_numeric(data[col], errors='coerce')
-            
+        
             data = data.dropna()
-            
+        
             if len(data) < 100:
                 error_msg = f"⚠️ بيانات غير كافية لـ {self.symbol}: {len(data)} صفوف فقط"
                 self.send_notification(error_msg)
                 return None
-            
+        
+            # حساب جميع المؤشرات المطلوبة
             data['rsi'] = self.calculate_rsi(data['close'])
             data['atr'] = self.calculate_atr(data)
+        
+            # المتوسطات المتحركة الأسية - يجب إضافة ema21
             data['ema200'] = data['close'].ewm(span=200, adjust=False).mean()
             data['ema50'] = data['close'].ewm(span=50, adjust=False).mean()
-            data['ema20'] = data['close'].ewm(span=20, adjust=False).mean()
+            data['ema21'] = data['close'].ewm(span=21, adjust=False).mean()  # ⬅️ أضف هذا السطر
             data['ema9'] = data['close'].ewm(span=9, adjust=False).mean()
-            
+        
             # حساب Bollinger Bands
             data['bb_upper'], data['bb_middle'], data['bb_lower'] = self.calculate_bollinger_bands(data['close'])
-            
+        
             data['vol_ma20'] = data['volume'].rolling(20).mean()
             data['vol_ratio'] = data['volume'] / data['vol_ma20']
-            
+         
             macd_line, macd_sig, macd_hist = self.calculate_macd(data['close'])
             data['macd'] = macd_line
             data['macd_sig'] = macd_sig
             data['macd_hist'] = macd_hist
-            
+        
             return data
         except Exception as e:
             error_msg = f"❌ خطأ في جلب البيانات: {e}"
             self.send_notification(error_msg)
             return None
-    
+
     def calculate_dynamic_stop_loss_take_profit(self, entry_price, signal_strength, atr_value):
         """حساب وقف الخسارة وجني الأرباح بشكل ديناميكي"""
         abs_strength = abs(signal_strength)
