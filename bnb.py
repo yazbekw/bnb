@@ -368,38 +368,18 @@ class BNB_Trading_Bot:
             return 0, []
     
     def manage_order_space(self, symbol):
-        """إدارة مساحة الأوامر مع محاولة إخلاء المساحة أولاً"""
+        """إدارة مساحة الأوامر (النسخة الآمنة)"""
         try:
             current_orders = self.get_algo_orders_count(symbol)
         
             if current_orders >= self.MAX_ALGO_ORDERS:
-                self.send_notification(f"⚠️ الحد الأقصى للأوامر ممتلئ ({current_orders}/{self.MAX_ALGO_ORDERS}) - جاري محاولة إخلاء المساحة...")
-            
-                # حاول إلغاء أوامر قديمة أولاً
-                cancelled_count, cancelled_info = self.cancel_oldest_orders(symbol, self.ORDERS_TO_CANCEL)
-            
-                if cancelled_count > 0:
-                    msg = f"♻️ <b>تم إخلاء مساحة - تم إلغاء {cancelled_count} أوامر</b>\n\n"
-                    for info in cancelled_info:
-                        msg += f"• {info}\n"
-                
-                    # التحقق من المساحة بعد الإلغاء
-                    current_orders_after = self.get_algo_orders_count(symbol)
-                    msg += f"\nالأوامر الحالية: {current_orders_after}/{self.MAX_ALGO_ORDERS}"
-                
-                    self.send_notification(msg)
-                    return current_orders_after < self.MAX_ALGO_ORDERS
-                else:
-                    self.send_notification("❌ فشل إخلاء المساحة - لا يمكن إلغاء أي أوامر")
-                    return False
-            else:
-                # المساحة متاحة
-                return True
-            
+                self.send_notification("⛔ الأوامر ممتلئة - تم إلغاء الصفقة الجديدة لحماية الصفقات الحالية")
+                return False
+        
+            return True
+        
         except Exception as e:
-            error_msg = f"❌ خطأ في إدارة مساحة الأوامر: {e}"
-            logger.error(error_msg)
-            self.send_notification(error_msg)
+            logger.error(f"خطأ في إدارة المساحة: {e}")
             return False
     
     def calculate_signal_strength(self, data, signal_type='buy'):
