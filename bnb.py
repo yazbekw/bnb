@@ -86,6 +86,10 @@ class BNB_Trading_Bot:
         self.trade_size = 7  # حجم الصفقة 7 دولار
         self.active_trades = {}  # لتتبع الصفقات النشطة
         
+        # زيادة معدلات وقف الخسارة وجني الأرباح
+        self.stop_loss_multiplier = 2.5  # كان 1.5 - زيادة وقف الخسارة
+        self.take_profit_multiplier = 3.5  # كان 2.0 - زيادة جني الأرباح
+        
         if telegram_token and telegram_chat_id:
             self.notifier = TelegramNotifier(telegram_token, telegram_chat_id)
             logger.info("تم تهيئة إشعارات Telegram")
@@ -97,7 +101,7 @@ class BNB_Trading_Bot:
             success_msg = f"✅ تم تهيئة البوت بنجاح - الرصيد الابتدائي: ${self.initial_balance:.2f}"
             logger.info(success_msg)
             if self.notifier:
-                self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\n{success_msg}\nحجم الصفقة: ${self.trade_size}")
+                self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\n{success_msg}\nحجم الصفقة: ${self.trade_size}\nوقف الخسارة: {self.stop_loss_multiplier}×ATR\nجني الأرباح: {self.take_profit_multiplier}×ATR")
         except Exception as e:
             logger.error(f"خطأ في جلب الرصيد الابتدائي: {e}")
             self.initial_balance = 0
@@ -118,6 +122,8 @@ class BNB_Trading_Bot:
             print("وضع التشغيل: فعلي")
             print(f"IP الخادم: {public_ip}")
             print(f"حجم الصفقة: ${self.trade_size}")
+            print(f"وقف الخسارة: {self.stop_loss_multiplier}×ATR")
+            print(f"جني الأرباح: {self.take_profit_multiplier}×ATR")
             print("="*50)
             
             return True
@@ -182,6 +188,20 @@ class BNB_Trading_Bot:
         logger.info(message)
         if self.notifier:
             self.notifier.send_message(message)
+    
+    def format_price(self, price, symbol):
+        """تقريب السعر حسب متطلبات Binance"""
+        try:
+            info = self.client.get_symbol_info(symbol)
+            price_filter = [f for f in info['filters'] if f['filterType'] == 'PRICE_FILTER'][0]
+            tick_size = float(price_filter['tickSize'])
+            
+            # التقريب حسب tickSize
+            formatted_price = round(price / tick_size) * tick_size
+            return round(formatted_price, 8)
+        except Exception as e:
+            logger.error(f"خطأ في تقريب السعر: {e}")
+            return round(price, 4)
     
     def calculate_rsi(self, data, period=14):
         delta = data.diff()
@@ -293,10 +313,10 @@ class BNB_Trading_Bot:
         # إشارة البيع النهائية (2 شرط)
         sell_signal = any([sell_condition_1, sell_condition_2])
     
-        # إدارة المخاطر
+        # إدارة المخاطر - باستخدام المضاعفات الجديدة
         atr_val = latest['atr']
-        stop_loss = latest['close'] - (1.5 * atr_val)
-        take_profit = latest['close'] + (2.0 * atr_val)
+        stop_loss = latest['close'] - (self.stop_loss_multiplier * atr_val)
+        take_profit = latest['close'] + (self.take_profit_multiplier * atr_val)
     
         return buy_signal, sell_signal, stop_loss, take_profit
     
@@ -344,13 +364,18 @@ class BNB_Trading_Bot:
                     quantity=quantity
                 )
                 
+                # تقريب الأسعار حسب متطلبات Binance
+                formatted_stop_loss = self.format_price(stop_loss, self.symbol)
+                formatted_take_profit = self.format_price(take_profit, self.symbol)
+                formatted_current = self.format_price(current_price, self.symbol)
+                
                 # إرسال إشعار بالشراء
                 msg = f"✅ <b>تم الشراء فعلياً</b>\n\n"
-                msg += f"السعر: ${current_price:.4f}\n"
+                msg += f"السعر: ${formatted_current:.4f}\n"
                 msg += f"الكمية: {quantity:.4f} BNB\n"
                 msg += f"القيمة: ${self.trade_size:.2f}\n"
-                msg += f"وقف الخسارة: ${stop_loss:.4f}\n"
-                msg += f"جني الأرباح: ${take_profit:.4f}\n"
+                msg += f"وقف الخسارة: ${formatted_stop_loss:.4f}\n"
+                msg += f"جني الأرباح: ${formatted_take_profit:.4f}\n"
                 msg += f"الرصيد المتبقي: ${usdt_balance - self.trade_size:.2f}"
                 self.send_notification(msg)
                 
@@ -359,15 +384,15 @@ class BNB_Trading_Bot:
                     oco_order = self.client.order_oco_sell(
                         symbol=self.symbol,
                         quantity=quantity,
-                        stopPrice=round(stop_loss, 4),
-                        stopLimitPrice=round(stop_loss, 4),
-                        price=round(take_profit, 4),
+                        stopPrice=formatted_stop_loss,
+                        stopLimitPrice=formatted_stop_loss,
+                        price=formatted_take_profit,
                         stopLimitTimeInForce='GTC'
                     )
                     
                     msg = f"📊 <b>تم وضع أوامر الوقف والأرباح على المنصة</b>\n\n"
-                    msg += f"وقف الخسارة: ${stop_loss:.4f}\n"
-                    msg += f"جني الأرباح: ${take_profit:.4f}\n"
+                    msg += f"وقف الخسارة: ${formatted_stop_loss:.4f}\n"
+                    msg += f"جني الأرباح: ${formatted_take_profit:.4f}\n"
                     msg += f"الكمية: {quantity:.4f} BNB"
                     self.send_notification(msg)
                     
@@ -381,8 +406,8 @@ class BNB_Trading_Bot:
                             quantity=quantity
                         )
                         self.send_notification("⚠️ تم البيع فورياً بسبب فشل وضع أوامر الوقف")
-                    except:
-                        pass
+                    except Exception as sell_error:
+                        self.send_notification(f"❌ فشل البيع أيضاً: {sell_error}")
                 
                 return True
                 
@@ -493,6 +518,8 @@ class BNB_Trading_Bot:
             message += f"الرصيد الابتدائي: ${self.initial_balance:.2f}\n"
             message += f"الرصيد الحالي: ${total_balance:.2f}\n"
             message += f"الأرباح/الخسائر: ${profit_loss:.2f} ({profit_loss_percent:+.2f}%)\n"
+            message += f"وقف الخسارة: {self.stop_loss_multiplier}×ATR\n"
+            message += f"جني الأرباح: {self.take_profit_multiplier}×ATR\n"
             message += f"حجم الصفقة: ${self.trade_size}\n\n"
             message += f"<b>تفاصيل الرصيد:</b>\n{balance_details}"
             
@@ -510,7 +537,7 @@ class BNB_Trading_Bot:
         flask_thread.start()
         
         interval_minutes = 15
-        self.send_notification(f"🚀 بدء تشغيل بوت تداول BNB\n\nسيعمل البوت على فحص السوق كل {interval_minutes} دقيقة\nحجم الصفقة: ${self.trade_size}")
+        self.send_notification(f"🚀 بدء تشغيل بوت تداول BNB\n\nسيعمل البوت على فحص السوق كل {interval_minutes} دقيقة\nحجم الصفقة: ${self.trade_size}\nوقف الخسارة: {self.stop_loss_multiplier}×ATR\nجني الأرباح: {self.take_profit_multiplier}×ATR")
         
         self.send_performance_report()
         
