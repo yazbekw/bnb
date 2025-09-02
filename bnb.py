@@ -368,32 +368,38 @@ class BNB_Trading_Bot:
             return 0, []
     
     def manage_order_space(self, symbol):
-        """إدارة مساحة الأوامر بناء على جميع الأوامر المعلقة"""
+        """إدارة مساحة الأوامر مع محاولة إخلاء المساحة أولاً"""
         try:
-            current_orders = self.get_algo_orders_count(symbol)  # الآن تحسب جميع الأوامر
+            current_orders = self.get_algo_orders_count(symbol)
         
             if current_orders >= self.MAX_ALGO_ORDERS:
-                self.send_notification(f"⚠️ الحد الأقصى للأوامر ممتلئ ({current_orders}/{self.MAX_ALGO_ORDERS})")
+                self.send_notification(f"⚠️ الحد الأقصى للأوامر ممتلئ ({current_orders}/{self.MAX_ALGO_ORDERS}) - جاري محاولة إخلاء المساحة...")
             
-                # إلغاء أقدم الأوامر (الآن يمكن أن تكون أي نوع)
+                # حاول إلغاء أوامر قديمة أولاً
                 cancelled_count, cancelled_info = self.cancel_oldest_orders(symbol, self.ORDERS_TO_CANCEL)
             
                 if cancelled_count > 0:
-                    msg = f"♻️ <b>تم إلغاء {cancelled_count} أوامر قديمة</b>\n\n"
+                    msg = f"♻️ <b>تم إخلاء مساحة - تم إلغاء {cancelled_count} أوامر</b>\n\n"
                     for info in cancelled_info:
                         msg += f"• {info}\n"
-                    self.send_notification(msg)
                 
-                    current_orders = self.get_algo_orders_count(symbol)
-                    return current_orders < self.MAX_ALGO_ORDERS
+                    # التحقق من المساحة بعد الإلغاء
+                    current_orders_after = self.get_algo_orders_count(symbol)
+                    msg += f"\nالأوامر الحالية: {current_orders_after}/{self.MAX_ALGO_ORDERS}"
+                
+                    self.send_notification(msg)
+                    return current_orders_after < self.MAX_ALGO_ORDERS
                 else:
-                    self.send_notification("❌ فشل إلغاء الأوامر القديمة")
+                    self.send_notification("❌ فشل إخلاء المساحة - لا يمكن إلغاء أي أوامر")
                     return False
             else:
+                # المساحة متاحة
                 return True
             
         except Exception as e:
-            logger.error(f"خطأ في إدارة مساحة الأوامر: {e}")
+            error_msg = f"❌ خطأ في إدارة مساحة الأوامر: {e}"
+            logger.error(error_msg)
+            self.send_notification(error_msg)
             return False
     
     def calculate_signal_strength(self, data, signal_type='buy'):
@@ -623,7 +629,12 @@ class BNB_Trading_Bot:
         return stop_loss, take_profit
     
     def execute_real_trade(self, signal_type, signal_strength, current_price, stop_loss, take_profit):
-        """تنفيذ صفقة حقيقية مع إدارة الرصيد المحسنة للشراء والبيع"""
+        # التحقق من المساحة قبل الشراء
+        if signal_type == 'buy':
+            # التحقق من إمكانية وضع أوامر الوقف أولاً
+            if not self.manage_order_space(self.symbol):
+                self.send_notification("❌ تم إلغاء الصفقة - لا يمكن وضع أوامر الوقف")
+                return False  # ⬅️ لا تتابع الشراء إذا لا يمكن وضع وق
         try:
             # حساب حجم الصفقة بناء على قوة الإشارة
             trade_size = self.calculate_dollar_size(signal_strength, signal_type)
