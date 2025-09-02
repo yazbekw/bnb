@@ -594,29 +594,165 @@ class BNB_Trading_Bot:
             self.send_notification(error_msg)
             return None
 
+    
     def calculate_dynamic_stop_loss_take_profit(self, entry_price, signal_strength, atr_value):
-        """حساب وقف الخسارة وجني الأرباح بشكل ديناميكي"""
+        """حساب وقف الخسارة وجني الأرباح بشكل ديناميكي مع مسافات أوسع"""
         abs_strength = abs(signal_strength)
-        
-        # تحديد مضاعف ATR حسب قوة الإشارة
+    
+        # تحديد مضاعف ATR حسب قوة الإشارة مع توسيع المسافة
         if abs_strength >= 80:    # إشارة قوية → مجال أوسع
-            stop_multiplier = 3.0
-            profit_multiplier = 4.0
+            stop_multiplier = 3.5    # زيادة من 3.0
+            profit_multiplier = 5.0  # زيادة من 4.0
         elif abs_strength >= 50:  # إشارة متوسطة → مجال متوسط
-            stop_multiplier = 2.5
-            profit_multiplier = 3.0
+            stop_multiplier = 3.0    # زيادة من 2.5
+            profit_multiplier = 4.0  # زيادة من 3.0
         else:                     # إشارة ضعيفة → مجال أقرب
-            stop_multiplier = 2.0
-            profit_multiplier = 2.0
-        
+            stop_multiplier = 2.5    # زيادة من 2.0
+            profit_multiplier = 3.5  # زيادة من 2.0
+    
         if signal_strength > 0:  # إشارة شراء
             stop_loss = entry_price - (stop_multiplier * atr_value)
             take_profit = entry_price + (profit_multiplier * atr_value)
         else:  # إشارة بيع
             stop_loss = entry_price + (stop_multiplier * atr_value)
             take_profit = entry_price - (profit_multiplier * atr_value)
-        
+    
         return stop_loss, take_profit
+    
+    def execute_real_trade(self, signal_type, signal_strength, current_price, stop_loss, take_profit):
+        """تنفيذ صفقة حقيقية مع إدارة الرصيد المحسنة للشراء والبيع"""
+        try:
+            # حساب حجم الصفقة بناء على قوة الإشارة
+            trade_size = self.calculate_dollar_size(signal_strength, signal_type)
+        
+            if trade_size <= 0:
+                return False
+        
+            logger.info(f"بدء تنفيذ صفقة {signal_type} بقوة {signal_strength}% بحجم {trade_size}$")
+        
+            if signal_type == 'buy':
+                can_trade, usdt_balance = self.check_balance_before_trade(trade_size)
+            
+                if not can_trade:
+                    # استخدام كل الرصيد المتاح مع الحفاظ على نسبة الأمان
+                    available_balance = usdt_balance * 0.95  # ترك 5% هامش أمان
+                    if available_balance >= 5:  # على الأقل 5$
+                        trade_size = available_balance
+                        self.send_notification(f"⚠️ تعديل حجم الصفقة. أصبح: ${trade_size:.2f} (الرصيد المتاح: ${usdt_balance:.2f})")
+                    else:
+                        self.send_notification(f"❌ رصيد غير كافي حتى لأصغر صفقة. المطلوب: $5، المتاح: ${usdt_balance:.2f}")
+                        return False
+            
+                quantity = trade_size / current_price
+            
+                info = self.client.get_symbol_info(self.symbol)
+                step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
+                precision = len(str(step_size).split('.')[1].rstrip('0'))
+                quantity = round(quantity - (quantity % step_size), precision)
+            
+                if quantity <= 0:
+                    self.send_notification("⚠️ الكمية غير صالحة للشراء")
+                    return False
+            
+                order = self.client.order_market_buy(
+                    symbol=self.symbol,
+                    quantity=quantity
+                )
+            
+                # إضافة سجل للصفقة
+                self.add_trade_record(
+                    trade_type="buy",
+                    quantity=quantity,
+                    price=current_price,
+                    trade_size=trade_size,
+                    signal_strength=signal_strength,
+                    order_id=order.get('orderId', 'N/A')
+                )
+            
+                # وضع أوامر الوقف وجني الأرباح
+                if not self.manage_order_space(self.symbol):
+                    self.send_notification("❌ لا يمكن وضع أوامر الوقف - المساحة ممتلئة")
+                    return True  # الصفقة ناجحة ولكن بدون وقف
+            
+                try:
+                    formatted_stop_loss = self.format_price(stop_loss, self.symbol)
+                    formatted_take_profit = self.format_price(take_profit, self.symbol)
+                
+                    oco_order = self.client.order_oco_sell(
+                        symbol=self.symbol,
+                        quantity=quantity,
+                        stopPrice=formatted_stop_loss,
+                        stopLimitPrice=formatted_stop_loss,
+                        price=formatted_take_profit,
+                        stopLimitTimeInForce='GTC'
+                    )
+                
+                except Exception as e:
+                    error_msg = f"⚠️ فشل وضع أوامر الوقف: {e}"
+                    self.send_notification(error_msg)
+            
+                return True
+            
+            elif signal_type == 'sell':
+                total_balance, balances, _ = self.get_account_balance_details()
+                bnb_balance = balances.get('BNB', {}).get('free', 0)
+            
+                if bnb_balance <= 0.001:
+                    self.send_notification("⚠️ رصيد BNB غير كافي للبيع")
+                    return False
+            
+                # حساب الكمية بناء على حجم الصفقة المطلوب
+                quantity_by_trade_size = trade_size / current_price
+            
+                # إذا كانت الكمية المطلوبة أكثر من الرصيد المتاح، نستخدم الرصيد كاملاً
+                if quantity_by_trade_size > bnb_balance:
+                    # استخدام كل الرصيد المتاح مع الحفاظ على نسبة الأمان
+                    available_balance = bnb_balance * 0.95  # ترك 5% هامش أمان
+                    quantity_to_sell = available_balance
+                    actual_trade_size = quantity_to_sell * current_price
+                
+                    if actual_trade_size >= 5:  # على الأقل 5$ قيمة
+                        trade_size = actual_trade_size
+                        self.send_notification(f"⚠️ تعديل حجم صفقة البيع. أصبح: ${trade_size:.2f} (الرصيد المتاح: {bnb_balance:.6f} BNB)")
+                    else:
+                        self.send_notification(f"❌ رصيد BNB غير كافي حتى لأصغر صفقة بيع. المطلوب: $5، المتاح: ${bnb_balance * current_price:.2f}")
+                        return False
+                else:
+                    quantity_to_sell = quantity_by_trade_size
+            
+                # تقريب الكمية حسب متطلبات Binance
+                info = self.client.get_symbol_info(self.symbol)
+                step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
+                precision = len(str(step_size).split('.')[1].rstrip('0'))
+                quantity = round(quantity_to_sell - (quantity_to_sell % step_size), precision)
+            
+                if quantity <= 0:
+                    self.send_notification("⚠️ الكمية غير صالحة للبيع")
+                    return False
+            
+                # تنفيذ أمر البيع
+                order = self.client.order_market_sell(
+                    symbol=self.symbol,
+                    quantity=quantity
+                )
+            
+                # إضافة سجل للصفقة
+                self.add_trade_record(
+                    trade_type="sell",
+                    quantity=quantity,
+                    price=current_price,
+                    trade_size=quantity * current_price,  # الحجم الفعلي بعد التقريب
+                    signal_strength=signal_strength,
+                    order_id=order.get('orderId', 'N/A')
+                 )
+            
+                return True
+            
+        except Exception as e:
+            error_msg = f"❌ خطأ في تنفيذ الصفقة: {e}"
+            self.send_notification(error_msg)
+            logger.error(error_msg)
+            return False
     
     def bnb_strategy(self, data):
         """استراتيجية التداول بناء على المؤشرات الخمسة"""
@@ -661,117 +797,7 @@ class BNB_Trading_Bot:
             logger.error(f"خطأ في التحقق من الرصيد: {e}")
             return False, 0
     
-    def execute_real_trade(self, signal_type, signal_strength, current_price, stop_loss, take_profit):
-        """تنفيذ صفقة حقيقية"""
-        try:
-            # حساب حجم الصفقة بناء على قوة الإشارة
-            trade_size = self.calculate_dollar_size(signal_strength, signal_type)
-            
-            if trade_size <= 0:
-                return False
-            
-            logger.info(f"بدء تنفيذ صفقة {signal_type} بقوة {signal_strength}% بحجم {trade_size}$")
-            
-            if signal_type == 'buy':
-                can_trade, usdt_balance = self.check_balance_before_trade(trade_size)
-                
-                if not can_trade:
-                    self.send_notification(f"⚠️ رصيد غير كافي للصفقة. المطلوب: ${trade_size:.2f}، المتاح: ${usdt_balance:.2f}")
-                    return False
-                
-                quantity = trade_size / current_price
-                
-                info = self.client.get_symbol_info(self.symbol)
-                step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
-                precision = len(str(step_size).split('.')[1].rstrip('0'))
-                quantity = round(quantity - (quantity % step_size), precision)
-                
-                if quantity <= 0:
-                    self.send_notification("⚠️ الكمية غير صالحة للشراء")
-                    return False
-                
-                order = self.client.order_market_buy(
-                    symbol=self.symbol,
-                    quantity=quantity
-                )
-                
-                # إضافة سجل للصفقة
-                self.add_trade_record(
-                    trade_type="buy",
-                    quantity=quantity,
-                    price=current_price,
-                    trade_size=trade_size,
-                    signal_strength=signal_strength,
-                    order_id=order.get('orderId', 'N/A')
-                )
-                
-                # وضع أوامر الوقف وجني الأرباح
-                if not self.manage_order_space(self.symbol):
-                    self.send_notification("❌ لا يمكن وضع أوامر الوقف - المساحة ممتلئة")
-                    return True  # الصفقة ناجحة ولكن بدون وقف
-                
-                try:
-                    formatted_stop_loss = self.format_price(stop_loss, self.symbol)
-                    formatted_take_profit = self.format_price(take_profit, self.symbol)
-                    
-                    oco_order = self.client.order_oco_sell(
-                        symbol=self.symbol,
-                        quantity=quantity,
-                        stopPrice=formatted_stop_loss,
-                        stopLimitPrice=formatted_stop_loss,
-                        price=formatted_take_profit,
-                        stopLimitTimeInForce='GTC'
-                    )
-                    
-                except Exception as e:
-                    error_msg = f"⚠️ فشل وضع أوامر الوقف: {e}"
-                    self.send_notification(error_msg)
-                
-                return True
-                
-            elif signal_type == 'sell':
-                total_balance, balances, _ = self.get_account_balance_details()
-                bnb_balance = balances.get('BNB', {}).get('free', 0)
-                
-                if bnb_balance <= 0.001:
-                    self.send_notification("⚠️ رصيد BNB غير كافي للبيع")
-                    return False
-                
-                # حساب الكمية بناء على حجم الصفقة المحدد
-                quantity_to_sell = trade_size / current_price
-                quantity_to_sell = min(quantity_to_sell, bnb_balance)
-                
-                info = self.client.get_symbol_info(self.symbol)
-                step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
-                precision = len(str(step_size).split('.')[1].rstrip('0'))
-                quantity = round(quantity_to_sell - (quantity_to_sell % step_size), precision)
-                
-                if quantity <= 0:
-                    self.send_notification("⚠️ الكمية غير صالحة للبيع")
-                    return False
-                
-                order = self.client.order_market_sell(
-                    symbol=self.symbol,
-                    quantity=quantity
-                )
-                
-                # إضافة سجل للصفقة
-                self.add_trade_record(
-                    trade_type="sell",
-                    quantity=quantity,
-                    price=current_price,
-                    trade_size=trade_size,
-                    signal_strength=signal_strength,
-                    order_id=order.get('orderId', 'N/A')
-                )
-                
-                return True
-                
-        except Exception as e:
-            error_msg = f"❌ خطأ في تنفيذ الصفقة: {e}"
-            self.send_notification(error_msg)
-            logger.error(error_msg)
-            return False
+    
     
     def execute_trade(self):
         data = self.get_historical_data()
