@@ -304,83 +304,86 @@ class BNB_Trading_Bot:
         except Exception as e:
             logger.error(f"خطأ في تقريب السعر: {e}")
             return round(price, 4)
-    
+
     def get_algo_orders_count(self, symbol):
-        """الحصول على عدد الأوامر الآلية الحالية"""
+        """الحصول على عدد جميع الأوامر المعلقة (ليس فقط الآلية)"""
         try:
             open_orders = self.client.get_open_orders(symbol=symbol)
-            algo_orders = [o for o in open_orders if o['type'] in ['STOP_LOSS_LIMIT', 'TAKE_PROFIT_LIMIT', 'OCO']]
-            return len(algo_orders)
+            return len(open_orders)  # ⬅️ الآن نحسب جميع الأوامر المعلقة
         except Exception as e:
-            logger.error(f"خطأ في جلب عدد الأوامر الآلية: {e}")
+            logger.error(f"خطأ في جلب عدد الأوامر النشطة: {e}")
             return 0
     
     def cancel_oldest_algo_orders(self, symbol, num_to_cancel=2):
-        """إلغاء أقدم الأوامر الآلية"""
+        """إلغاء أقدم الأوامر (أي نوع)"""
         try:
             open_orders = self.client.get_open_orders(symbol=symbol)
-            algo_orders = []
-            
+        
+            # ترتيب جميع الأوامر من الأقدم إلى الأحدث
+            all_orders = []
             for order in open_orders:
-                if order['type'] in ['STOP_LOSS_LIMIT', 'TAKE_PROFIT_LIMIT', 'OCO']:
-                    order_time = datetime.fromtimestamp(order['time'] / 1000)
-                    algo_orders.append({
-                        'orderId': order['orderId'],
-                        'time': order_time,
-                        'type': order['type'],
-                        'price': order.get('price', 'N/A')
-                    })
-            
-            algo_orders.sort(key=lambda x: x['time'])
-            
+                order_time = datetime.fromtimestamp(order['time'] / 1000)
+                all_orders.append({
+                    'orderId': order['orderId'],
+                    'time': order_time,
+                    'type': order['type'],
+                    'side': order['side'],
+                    'price': order.get('price', 'N/A'),
+                    'quantity': order.get('origQty', 'N/A')
+                })
+        
+            all_orders.sort(key=lambda x: x['time'])
+        
             cancelled_count = 0
             cancelled_info = []
-            
-            for i in range(min(num_to_cancel, len(algo_orders))):
+        
+            for i in range(min(num_to_cancel, len(all_orders))):
                 try:
                     self.client.cancel_order(
                         symbol=symbol,
-                        orderId=algo_orders[i]['orderId']
+                        orderId=all_orders[i]['orderId']
                     )
                     cancelled_count += 1
-                    cancelled_info.append(f"{algo_orders[i]['type']} - {algo_orders[i]['price']}")
-                    logger.info(f"تم إلغاء الأمر القديم: {algo_orders[i]['orderId']}")
-                    
+                    cancelled_info.append(f"{all_orders[i]['type']} - {all_orders[i]['side']} - {all_orders[i]['price']}")
+                    logger.info(f"تم إلغاء الأمر القديم: {all_orders[i]['orderId']}")
+                
+                    # إضافة سجل للإلغاء
                     self.add_trade_record(
                         trade_type="cancel",
-                        quantity=0,
-                        price=0,
+                        quantity=float(all_orders[i]['quantity']),
+                        price=float(all_orders[i]['price']),
                         trade_size=0,
                         signal_strength=0,
-                        order_id=algo_orders[i]['orderId'],
+                        order_id=all_orders[i]['orderId'],
                         status="cancelled"
                     )
-                    
+                
                 except Exception as e:
-                    logger.error(f"خطأ في إلغاء الأمر {algo_orders[i]['orderId']}: {e}")
-            
+                    logger.error(f"خطأ في إلغاء الأمر {all_orders[i]['orderId']}: {e}")
+        
             return cancelled_count, cancelled_info
-            
+        
         except Exception as e:
             logger.error(f"خطأ في إلغاء الأوامر القديمة: {e}")
             return 0, []
     
     def manage_order_space(self, symbol):
-        """إدارة مساحة الأوامر"""
+        """إدارة مساحة الأوامر بناء على جميع الأوامر المعلقة"""
         try:
-            current_orders = self.get_algo_orders_count(symbol)
-            
+            current_orders = self.get_algo_orders_count(symbol)  # الآن تحسب جميع الأوامر
+        
             if current_orders >= self.MAX_ALGO_ORDERS:
                 self.send_notification(f"⚠️ الحد الأقصى للأوامر ممتلئ ({current_orders}/{self.MAX_ALGO_ORDERS})")
-                
-                cancelled_count, cancelled_info = self.cancel_oldest_algo_orders(symbol, self.ORDERS_TO_CANCEL)
-                
+            
+                # إلغاء أقدم الأوامر (الآن يمكن أن تكون أي نوع)
+                cancelled_count, cancelled_info = self.cancel_oldest_orders(symbol, self.ORDERS_TO_CANCEL)
+            
                 if cancelled_count > 0:
                     msg = f"♻️ <b>تم إلغاء {cancelled_count} أوامر قديمة</b>\n\n"
                     for info in cancelled_info:
                         msg += f"• {info}\n"
                     self.send_notification(msg)
-                    
+                
                     current_orders = self.get_algo_orders_count(symbol)
                     return current_orders < self.MAX_ALGO_ORDERS
                 else:
@@ -388,7 +391,7 @@ class BNB_Trading_Bot:
                     return False
             else:
                 return True
-                
+            
         except Exception as e:
             logger.error(f"خطأ في إدارة مساحة الأوامر: {e}")
             return False
