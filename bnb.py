@@ -314,7 +314,7 @@ class BNB_Trading_Bot:
             logger.error(f"خطأ في جلب عدد الأوامر النشطة: {e}")
             return 0
     
-    def cancel_oldest_algo_orders(self, symbol, num_to_cancel=2):
+    def cancel_oldest_orders(self, symbol, num_to_cancel=2):
         """إلغاء أقدم الأوامر (أي نوع)"""
         try:
             open_orders = self.client.get_open_orders(symbol=symbol)
