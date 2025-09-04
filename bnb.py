@@ -867,7 +867,7 @@ class BNB_Trading_Bot:
             typical_price = (data['high'] + data['low'] + data['close']) / 3
             sma = typical_price.rolling(window=period).mean()
             mean_deviation = typical_price.rolling(window=period).apply(
-                lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+                lambda x: np.mean(np.abs(x - np.mean(x)))
             )
             cci = (typical_price - sma) / (0.015 * mean_deviation)
             
@@ -1007,6 +1007,7 @@ class BNB_Trading_Bot:
             # حساب جميع المؤشرات المطلوبة
             data['rsi'] = self.calculate_rsi(data['close'])
             data['atr'] = self.calculate_atr(data)
+            data = data.dropna() 
 
             data['ema34'] = data['close'].ewm(span=34, adjust=False).mean()
         
