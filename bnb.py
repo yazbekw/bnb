@@ -737,7 +737,7 @@ class BNB_Trading_Bot:
         latest = data.iloc[-1]
         macd_strength = (latest['macd'] - latest['macd_sig']) / abs(latest['macd_sig']) if latest['macd_sig'] != 0 else 0
 
-       if signal_type == 'buy':
+        if signal_type == 'buy':  # Fixed indentation (4 spaces)
             if macd_strength > 0.25:  # إشارة شراء قوية
                 return 20
             elif macd_strength > 0.1:  # إشارة شراء متوسطة
@@ -751,14 +751,14 @@ class BNB_Trading_Bot:
                 return 10
             elif macd_strength > 0.2:  # إشارة شراء قوية (عقوبة للبيع)
                 return -20
-    
-        return 0
+
+        return 0 
 
     def calculate_rsi_score(self, data, signal_type):
         """حساب درجة RSI مع تحسينات"""
         latest = data.iloc[-1]
-     
-       if signal_type == 'buy':
+
+        if signal_type == 'buy':  # Fixed indentation (4 spaces)
             if latest['rsi'] < 30:  # ذروة بيع
                 return 15
             elif latest['rsi'] < 40:  # منطقة بيع
@@ -772,8 +772,8 @@ class BNB_Trading_Bot:
                 return 8
             elif latest['rsi'] < 30:  # ذروة بيع (عقوبة)
                 return -15
-    
-        return 0
+
+        return 0   
 
     def calculate_bollinger_bands_score(self, data, signal_type):
         """حساب درجة بولينجر باند مع تحسينات"""
