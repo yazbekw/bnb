@@ -672,70 +672,99 @@ class BNB_Trading_Bot:
         """تقييم قوة الإشارة من -100 إلى +100% - مع دمج الأوزان الزمنية"""
         latest = data.iloc[-1]
         score = 0
-        
+    
+        # تسجيل مساهمة كل مؤشر
+        indicator_contributions = {}
+    
         # 1. الوزن الزمني (20%) - الجديد
         time_weight_score = self.calculate_time_weight_score(signal_type)
         score += time_weight_score
-        
+        indicator_contributions['time_weight'] = time_weight_score
+    
         # 2. اتجاه السوق (15%) - مخفض من 25%
         market_trend_score = self.calculate_market_trend_score(data, signal_type)
         score += market_trend_score
-        
+        indicator_contributions['market_trend'] = market_trend_score
+    
         # 3. المتوسطات المتحركة (20%) - مخفض من 25%
         ema_bullish = latest['ema9'] > latest['ema21'] > latest['ema50'] and latest['close'] > latest['ema200']
         ema_bearish = latest['ema9'] < latest['ema21'] < latest['ema50'] and latest['close'] < latest['ema200']
-        
+    
+        ema_score = 0
         if signal_type == 'buy':
-            if ema_bullish: score += 20
-            elif ema_bearish: score -= 20
+            if ema_bullish: ema_score = 20
+            elif ema_bearish: ema_score = -20
         else:
-            if ema_bearish: score += 20
-            elif ema_bullish: score -= 20
-        
+            if ema_bearish: ema_score = 20
+            elif ema_bullish: ema_score = -20
+    
+        score += ema_score
+        indicator_contributions['moving_averages'] = ema_score
+    
         # 4. RSI (15%) - مخفض من 20%
+        rsi_score = 0
         if signal_type == 'buy':
-            if latest['rsi'] < 30: score += 15
-            elif latest['rsi'] > 70: score -= 15
-            elif 40 < latest['rsi'] < 60: score += 8
+            if latest['rsi'] < 30: rsi_score = 15
+            elif latest['rsi'] > 70: rsi_score = -15
+            elif 40 < latest['rsi'] < 60: rsi_score = 8
         else:
-            if latest['rsi'] > 70: score += 15
-            elif latest['rsi'] < 30: score -= 15
-            elif 40 < latest['rsi'] < 60: score += 8
-        
+            if latest['rsi'] > 70: rsi_score = 15
+            elif latest['rsi'] < 30: rsi_score = -15
+            elif 40 < latest['rsi'] < 60: rsi_score = 8
+    
+        score += rsi_score
+        indicator_contributions['rsi'] = rsi_score
+    
         # 5. MACD (14%) - مخفض من 15%
         macd_strength = (latest['macd'] - latest['macd_sig']) / abs(latest['macd_sig']) if latest['macd_sig'] != 0 else 0
-        
+    
+        macd_score = 0
         if signal_type == 'buy':
-            if macd_strength > 0.2: score += 14
-            elif macd_strength < -0.1: score -= 14
+            if macd_strength > 0.2: macd_score = 14
+            elif macd_strength < -0.1: macd_score = -14
         else:
-            if macd_strength < -0.2: score += 14
-            elif macd_strength > 0.1: score -= 14
-        
+            if macd_strength < -0.2: macd_score = 14
+            elif macd_strength > 0.1: macd_score = -14
+    
+        score += macd_score
+        indicator_contributions['macd'] = macd_score
+    
         # 6. Bollinger Bands (10%) - مخفض من 12%
         bb_position = (latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower'])
-        
+    
+        bb_score = 0
         if signal_type == 'buy':
-            if bb_position < 0.2: score += 10
-            elif bb_position > 0.8: score -= 10
+            if bb_position < 0.2: bb_score = 10
+            elif bb_position > 0.8: bb_score = -10
         else:
-            if bb_position > 0.8: score += 10
-            elif bb_position < 0.2: score -= 10
-        
+            if bb_position > 0.8: bb_score = 10
+            elif bb_position < 0.2: bb_score = -10
+    
+        score += bb_score
+        indicator_contributions['bollinger_bands'] = bb_score
+    
         # 7. مؤشر الزخم الإضافي (CCI) - (8%) مخفض من 10%
         cci_score = self.calculate_cci_momentum(data, signal_type)
         score += cci_score
-        
+        indicator_contributions['cci'] = cci_score
+    
         # 8. Volume (8%) - مخفض من 10%
         volume_strength = latest['vol_ratio']
-        
+    
+        volume_score = 0
         if signal_type == 'buy':
-            if volume_strength > 2.0 and latest['close'] > latest['open']: score += 8
-            elif volume_strength > 2.0 and latest['close'] < latest['open']: score -= 8
+            if volume_strength > 2.0 and latest['close'] > latest['open']: volume_score = 8
+            elif volume_strength > 2.0 and latest['close'] < latest['open']: volume_score = -8
         else:
-            if volume_strength > 2.0 and latest['close'] < latest['open']: score += 8
-            elif volume_strength > 2.0 and latest['close'] > latest['open']: score -= 8
-        
+            if volume_strength > 2.0 and latest['close'] < latest['open']: volume_score = 8
+            elif volume_strength > 2.0 and latest['close'] > latest['open']: volume_score = -8
+    
+        score += volume_score
+        indicator_contributions['volume'] = volume_score
+    
+        # تخزين مساهمات المؤشرات للاستخدام لاحقاً
+        self.last_indicator_contributions = indicator_contributions
+    
         return max(min(score, 100), -100)
 
     def calculate_time_weight_score(self, signal_type):
@@ -1213,30 +1242,73 @@ class BNB_Trading_Bot:
         return False
 
     def generate_signal_analysis(self, data, signal_type, signal_strength, order_status):
-        """إنشاء تحليل مفصل للإشارة"""
+        """إنشاء تحليل مفصل للإشارة مع نسبة مساهمة كل مؤشر"""
         latest = data.iloc[-1]
+    
+        # الحصول على الوزن الزمني الحالي
+        time_signal = self.time_weight_manager.get_current_time_weight()
+        time_weight_info = ""
+        harmony_analysis = ""
+    
+        if time_signal:
+            time_signal_type = "شراء" if time_signal['signal'] == 'BUY' else "بيع"
+            time_weight_info = f"الوزن الزمني: {time_signal['weight']:.1f} ({time_signal_type})\n"
         
+            # تحليل التوافق بين الإشارات
+            if (signal_type == 'buy' and time_signal['signal'] == 'BUY') or \
+               (signal_type == 'sell' and time_signal['signal'] == 'SELL'):
+                harmony_analysis = "🟢 <b>توافق تام</b> بين الإشارة الفنية والزمنية\n"
+            else:
+                harmony_analysis = "🟡 <b>تعارض</b> بين الإشارة الفنية والزمنية\n"
+    
         analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()})</b>\n\n"
         analysis += f"قوة الإشارة: {signal_strength}%\n"
         analysis += f"السعر الحالي: ${latest['close']:.4f}\n"
-        analysis += f"الاتجاه العام: {'صاعد' if latest['close'] > latest['ema200'] else 'هبوطي'}\n"
+        analysis += f"الاتجاه العام: {'صاعد' if latest['close'] > latest['ema200'] else 'هبوطي'}\n\n"
+    
+        # إضافة مساهمة كل مؤشر
+        analysis += "📈 <b>مساهمة المؤشرات:</b>\n"
+    
+        if hasattr(self, 'last_indicator_contributions'):
+            contributions = self.last_indicator_contributions
+        
+            # تحويل أسماء المؤشرات للعربية
+            indicator_names = {
+                'time_weight': 'الوزن الزمني',
+                'market_trend': 'اتجاه السوق',
+                'moving_averages': 'المتوسطات المتحركة',
+                'rsi': 'مؤشر RSI',
+                'macd': 'مؤشر MACD',
+                'bollinger_bands': 'بولينجر باند',
+                'cci': 'مؤشر CCI',
+                'volume': 'الحجم'
+            }
+        
+            for indicator, value in contributions.items():
+                arabic_name = indicator_names.get(indicator, indicator)
+                emoji = "🟢" if value > 0 else "🔴" if value < 0 else "⚪"
+                analysis += f"{emoji} {arabic_name}: {value:+.1f}\n"
+    
+        analysis += f"\n📊 <b>التفاصيل الفنية:</b>\n"
         analysis += f"RSI: {latest['rsi']:.1f}\n"
         analysis += f"MACD: {latest['macd']:.6f}\n"
         analysis += f"الحجم: {latest['vol_ratio']:.1f}x المتوسط\n"
+        analysis += time_weight_info
+        analysis += harmony_analysis
         analysis += f"حالة الأوامر: {order_status}\n"
-        
+    
         # تعريف المتغير مسبقاً لتجنب الخطأ
         required_threshold = 0
-        
+    
         if signal_type == 'buy':
             required_threshold = self.STRICT_BUY_THRESHOLD if order_status == "FULL" else self.BASELINE_BUY_THRESHOLD
             analysis += f"العتبة المطلوبة: {required_threshold}%\n"
         else:
             required_threshold = self.SELL_THRESHOLD
             analysis += f"العتبة المطلوبة: {required_threshold}%\n"
-        
+    
         analysis += f"القرار: {'✅ مقبولة' if signal_strength >= required_threshold else '❌ مرفوضة'}"
-        
+    
         return analysis
     
     def check_time_alerts(self):
