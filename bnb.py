@@ -141,6 +141,11 @@ class BNB_Trading_Bot:
         self.performance_analyzer = PerformanceAnalyzer()
         self.load_trade_history()
         
+        # إعدادات العتبات الجديدة
+        self.BASELINE_BUY_THRESHOLD = 35  # رفع من 25 إلى 35
+        self.STRICT_BUY_THRESHOLD = 45    # رفع من 20 إلى 45 (للأوامر الممتلئة)
+        self.SELL_THRESHOLD = 25          # عتبة البيع تبقى كما هي
+        
         self.api_key = api_key or os.environ.get('BINANCE_API_KEY')
         self.api_secret = api_secret or os.environ.get('BINANCE_API_SECRET')
         telegram_token = telegram_token or os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -186,7 +191,15 @@ class BNB_Trading_Bot:
             success_msg = f"✅ تم تهيئة البوت بنجاح - الرصيد الابتدائي: ${self.initial_balance:.2f}"
             logger.info(success_msg)
             if self.notifier:
-                self.notifier.send_message(f"🤖 <b>بدء تشغيل بوت تداول BNB</b>\n\n{success_msg}\nنطاق حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\nالحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}")
+                self.notifier.send_message(
+                    f"🤖 <b>بدء تشغيل بوت تداول BNB المحسن</b>\n\n"
+                    f"{success_msg}\n"
+                    f"نطاق حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\n"
+                    f"الحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}\n"
+                    f"عتبة الشراء الأساسية: {self.BASELINE_BUY_THRESHOLD}%\n"
+                    f"عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%\n"
+                    f"عتبة البيع: {self.SELL_THRESHOLD}%"
+                )
         except Exception as e:
             logger.error(f"خطأ في جلب الرصيد الابتدائي: {e}")
             self.initial_balance = 0
@@ -344,6 +357,9 @@ class BNB_Trading_Bot:
             print(f"IP الخادم: {public_ip}")
             print(f"حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}")
             print(f"الحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}")
+            print(f"عتبة الشراء الأساسية: {self.BASELINE_BUY_THRESHOLD}%")
+            print(f"عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%")
+            print(f"عتبة البيع: {self.SELL_THRESHOLD}%")
             print("="*50)
             
             return True
@@ -435,6 +451,22 @@ class BNB_Trading_Bot:
             logger.error(f"خطأ في جلب عدد الأوامر النشطة: {e}")
             return 0
     
+    def get_order_space_status(self, symbol):
+        """الحصول على حالة مساحة الأوامر (الجديدة)"""
+        try:
+            current_orders = self.get_algo_orders_count(symbol)
+            
+            if current_orders >= self.MAX_ALGO_ORDERS:
+                return "FULL"  # الأوامر ممتلئة
+            elif current_orders >= (self.MAX_ALGO_ORDERS - 2):
+                return "NEAR_FULL"  # الأوامر قريبة من الامتلاء
+            else:
+                return "AVAILABLE"  # المساحة متاحة
+                
+        except Exception as e:
+            logger.error(f"خطأ في التحقق من حالة الأوامر: {e}")
+            return "FULL"  # في حالة الخطأ، نفترض أن الأوامر ممتلئة للسلامة
+    
     def cancel_oldest_orders(self, symbol, num_to_cancel=2):
         """إلغاء أقدم الأوامر"""
         try:
@@ -487,181 +519,155 @@ class BNB_Trading_Bot:
             return 0, []
     
     def manage_order_space(self, symbol):
-        """إدارة مساحة الأوامر"""
+        """إدارة مساحة الأوامر (محدثة)"""
         try:
-            current_orders = self.get_algo_orders_count(symbol)
-        
-            if current_orders >= self.MAX_ALGO_ORDERS:
-                # تنظيف تلقائي للأوامر الأبعد
-                self.cancel_farthest_orders(symbol, 2)
+            order_status = self.get_order_space_status(symbol)
+            
+            if order_status == "FULL":
+                self.send_notification("⛔ الأوامر ممتلئة - تم إلغاء الصفقة الجديدة لحماية الصفقات الحالية")
                 return False
-        
+            
             return True
-        
+            
         except Exception as e:
             logger.error(f"خطأ في إدارة المساحة: {e}")
             return False
-
-    def cancel_farthest_orders(self, symbol, num_to_cancel=2):
-        """إلغاء الأوامر الأبعد عن سعر السوق الحالي"""
-        try:
-            # الحصول على السعر الحالي
-            ticker = self.client.get_symbol_ticker(symbol=symbol)
-            current_price = float(ticker['price'])
-            
-            open_orders = self.client.get_open_orders(symbol=symbol)
-            
-            orders_with_distance = []
-            for order in open_orders:
-                order_price = float(order.get('price', 0))
-                if order_price > 0:
-                    # حساب المسافة النسبية من السعر الحالي
-                    distance_percent = abs((order_price - current_price) / current_price) * 100
-                    
-                    orders_with_distance.append({
-                        'orderId': order['orderId'],
-                        'price': order_price,
-                        'side': order['side'],
-                        'type': order['type'],
-                        'distance_percent': distance_percent,
-                        'quantity': float(order.get('origQty', 0))
-                    })
-            
-            # ترتيب من الأبعد إلى الأقرب
-            orders_with_distance.sort(key=lambda x: x['distance_percent'], reverse=True)
-            
-            cancelled_count = 0
-            for i in range(min(num_to_cancel, len(orders_with_distance))):
-                try:
-                    self.client.cancel_order(
-                        symbol=symbol,
-                        orderId=orders_with_distance[i]['orderId']
-                    )
-                    cancelled_count += 1
-                    logger.info(f"تم إلغاء الأمر الأبعد: {orders_with_distance[i]['orderId']} (مسافة: {orders_with_distance[i]['distance_percent']:.2f}%)")
-                    
-                    self.add_trade_record(
-                        trade_type="cancel",
-                        quantity=orders_with_distance[i]['quantity'],
-                        price=orders_with_distance[i]['price'],
-                        trade_size=0,
-                        signal_strength=0,
-                        order_id=orders_with_distance[i]['orderId'],
-                        status="cancelled"
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"خطأ في إلغاء الأمر: {e}")
-            
-            if cancelled_count > 0:
-                self.send_notification(f"🧹 تم إلغاء {cancelled_count} أمر أبعد عن السوق")
-            
-            return cancelled_count
-            
-        except Exception as e:
-            logger.error(f"خطأ في إلغاء الأوامر الأبعد: {e}")
-            return 0
     
     def calculate_signal_strength(self, data, signal_type='buy'):
-        """تقييم قوة الإشارة من -100 إلى +100% - الخطة المتحفظة"""
+        """تقييم قوة الإشارة من -100 إلى +100% - مع التحسينات الجديدة"""
         latest = data.iloc[-1]
         score = 0
         
-        # التحقق من عدد الأوامر
-        current_orders = self.get_algo_orders_count(self.symbol)
-        orders_full = current_orders >= 10  # أكثر من 8 أوامر
+        # 1. مرشح اتجاه السوق (25%) - الجديد
+        market_trend_score = self.calculate_market_trend_score(data, signal_type)
+        score += market_trend_score
         
-        # 1. المتوسطات المتحركة (30%) - شروط أكثر صرامة
+        # 2. المتوسطات المتحركة (25%) - مخفض من 30%
         ema_bullish = latest['ema9'] > latest['ema21'] > latest['ema50'] and latest['close'] > latest['ema200']
         ema_bearish = latest['ema9'] < latest['ema21'] < latest['ema50'] and latest['close'] < latest['ema200']
         
         if signal_type == 'buy':
-            if ema_bullish: 
-                score += 30
-                # إذا كانت الأوامر ممتلئة: زيادة صرامة إضافية
-                if orders_full and latest['close'] > latest['ema200'] * 1.02:
-                    score += 10
-            elif ema_bearish: 
-                score -= 30
+            if ema_bullish: score += 25
+            elif ema_bearish: score -= 25
         else:
-            if ema_bearish: score += 30
-            elif ema_bullish: score -= 30
+            if ema_bearish: score += 25
+            elif ema_bullish: score -= 25
         
-        # 2. RSI (25%) - أكثر تشاؤمية للشراء عند الامتلاء
+        # 3. RSI (20%) - مخفض من 25%
         if signal_type == 'buy':
-            if latest['rsi'] < 25: 
-                score += 25
-                if orders_full and latest['rsi'] < 22:
-                    score += 5
-            elif latest['rsi'] > 65: 
-                score -= 25
-            elif 35 < latest['rsi'] < 55: 
-                score += 10
+            if latest['rsi'] < 30: score += 20
+            elif latest['rsi'] > 70: score -= 20
+            elif 40 < latest['rsi'] < 60: score += 10
         else:
-            if latest['rsi'] > 75: score += 25
-            elif latest['rsi'] < 35: score -= 25
-            elif 35 < latest['rsi'] < 55: score += 10
+            if latest['rsi'] > 70: score += 20
+            elif latest['rsi'] < 30: score -= 20
+            elif 40 < latest['rsi'] < 60: score += 10
         
-        # 3. MACD (20%) - إشارة أقوى للشراء عند الامتلاء
+        # 4. MACD (15%) - مخفض من 20%
         macd_strength = (latest['macd'] - latest['macd_sig']) / abs(latest['macd_sig']) if latest['macd_sig'] != 0 else 0
         
         if signal_type == 'buy':
-            if macd_strength > 0.15: 
-                score += 20
-                if orders_full and macd_strength > 0.20:
-                    score += 5
-            elif macd_strength < -0.05: 
-                score -= 20
+            if macd_strength > 0.2: score += 15
+            elif macd_strength < -0.1: score -= 15
         else:
-            if macd_strength < -0.15: score += 20
-            elif macd_strength > 0.05: score -= 20
+            if macd_strength < -0.2: score += 15
+            elif macd_strength > 0.1: score -= 15
         
-        # 4. Bollinger Bands (20%)
+        # 5. Bollinger Bands (15%) - مخفض من 20%
         bb_position = (latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower'])
         
         if signal_type == 'buy':
-            if bb_position < 0.15: 
-                score += 20
-                if orders_full and bb_position < 0.10:
-                    score += 5
-            elif bb_position > 0.85: 
-                score -= 20
+            if bb_position < 0.2: score += 15
+            elif bb_position > 0.8: score -= 15
         else:
-            if bb_position > 0.85: score += 20
-            elif bb_position < 0.15: score -= 20
+            if bb_position > 0.8: score += 15
+            elif bb_position < 0.2: score -= 15
         
-        # 5. Volume (15%) - عتبة أعلى للشراء عند الامتلاء
+        # 6. مؤشر الزخم الإضافي (CCI) - الجديد (10%)
+        cci_score = self.calculate_cci_momentum(data, signal_type)
+        score += cci_score
+        
+        # 7. Volume (10%) - مخفض من 15%
         volume_strength = latest['vol_ratio']
         
         if signal_type == 'buy':
-            if volume_strength > 2.5 and latest['close'] > latest['open']: 
-                score += 15
-                if orders_full and volume_strength > 3.0:
-                    score += 5
-            elif volume_strength > 2.5 and latest['close'] < latest['open']: 
-                score -= 15
+            if volume_strength > 2.0 and latest['close'] > latest['open']: score += 10
+            elif volume_strength > 2.0 and latest['close'] < latest['open']: score -= 10
         else:
-            if volume_strength > 2.5 and latest['close'] < latest['open']: score += 15
-            elif volume_strength > 2.5 and latest['close'] > latest['open']: score -= 15
+            if volume_strength > 2.0 and latest['close'] < latest['open']: score += 10
+            elif volume_strength > 2.0 and latest['close'] > latest['open']: score -= 10
         
         return max(min(score, 100), -100)
+    
+    def calculate_market_trend_score(self, data, signal_type):
+        """حساب درجة اتجاه السوق (الجديدة)"""
+        latest = data.iloc[-1]
+        
+        # اتجاه طويل الأجل (EMA 200)
+        price_vs_ema200 = (latest['close'] - latest['ema200']) / latest['ema200'] * 100
+        
+        if signal_type == 'buy':
+            # تجنب الشراء في اتجاه هبوطي قوي
+            if price_vs_ema200 < -5:  # السعر تحت EMA200 بأكثر من 5%
+                return -25  # عقوبة كبيرة للشراء في اتجاه هبوطي
+            elif price_vs_ema200 < -2:  # السعر تحت EMA200 بـ 2-5%
+                return -15
+            elif price_vs_ema200 > 5:  # السعر فوق EMA200 بأكثر من 5%
+                return +15  # مكافأة للشراء في اتجاه صاعد
+        else:
+            # مكافأة البيع في اتجاه هبوطي
+            if price_vs_ema200 < -5:
+                return +20
+            elif price_vs_ema200 < -2:
+                return +10
+            elif price_vs_ema200 > 5:
+                return -10  # عقوبة للبيع في اتجاه صاعد قوي
+        
+        return 0
+    
+    def calculate_cci_momentum(self, data, signal_type, period=20):
+        """حساب مؤشر CCI للزخم (الجديد)"""
+        try:
+            latest = data.iloc[-1]
+            typical_price = (data['high'] + data['low'] + data['close']) / 3
+            sma = typical_price.rolling(window=period).mean()
+            mad = typical_price.rolling(window=period).apply(lambda x: np.mean(np.abs(x - np.mean(x))))
+            cci = (typical_price - sma) / (0.015 * mad)
+            
+            current_cci = cci.iloc[-1]
+            
+            if signal_type == 'buy':
+                if current_cci < -100:  # ذروة بيع
+                    return 10
+                elif current_cci > 100:  # ذروة شراء
+                    return -10
+            else:
+                if current_cci > 100:  # ذروة شراء
+                    return 10
+                elif current_cci < -100:  # ذروة بيع
+                    return -10
+                    
+        except Exception as e:
+            logger.error(f"خطأ في حساب CCI: {e}")
+        
+        return 0
     
     def calculate_dollar_size(self, signal_strength, signal_type='buy'):
         """حساب حجم الصفقة بالدولار حسب قوة الإشارة"""
         abs_strength = abs(signal_strength)
         
         if signal_type == 'buy' and signal_strength > 0:
-            if abs_strength >= 80:
+            if abs_strength >= 80:    # إشارة شراء قوية جداً
                 base_size = 30
                 bonus = (abs_strength - 80) * 1.0
                 return min(base_size + bonus, 50)
             
-            elif abs_strength >= 50:
+            elif abs_strength >= 50:  # إشارة شراء جيدة
                 base_size = 15
                 bonus = (abs_strength - 50) * 0.5
                 return min(base_size + bonus, 25)
             
-            elif abs_strength >= 25:
+            elif abs_strength >= 25:  # إشارة شراء خفيفة
                 base_size = 5
                 bonus = (abs_strength - 25) * 0.3
                 return min(base_size + bonus, 10)
@@ -670,17 +676,17 @@ class BNB_Trading_Bot:
                 return 0
                 
         elif signal_type == 'sell' and signal_strength > 0:
-            if abs_strength >= 80:
+            if abs_strength >= 80:    # إشارة بيع قوية جداً
                 base_size = 30
                 bonus = (abs_strength - 80) * 1.0
                 return min(base_size + bonus, 50)
             
-            elif abs_strength >= 50:
+            elif abs_strength >= 50:  # إشارة بيع جيدة
                 base_size = 15
                 bonus = (abs_strength - 50) * 0.5
                 return min(base_size + bonus, 25)
             
-            elif abs_strength >= 25:
+            elif abs_strength >= 25:  # إشارة بيع خفيفة
                 base_size = 5
                 bonus = (abs_strength - 25) * 0.3
                 return min(base_size + bonus, 10)
@@ -789,32 +795,30 @@ class BNB_Trading_Bot:
             return None
 
     def calculate_dynamic_stop_loss_take_profit(self, entry_price, signal_strength, atr_value):
-        """حساب وقف الخسارة وجني الأرباح - نفس النسبة لكليهما"""
+        """حساب وقف الخسارة وجني الأرباح بشكل ديناميكي - مع تحسين RR"""
         abs_strength = abs(signal_strength)
     
-        # تحديد مضاعف ATR حسب قوة الإشارة - نفس النسبة للوقف والجني
-        if abs_strength >= 80:
-            atr_multiplier = 4.0  # نفس النسبة للوقف والجني
-        elif abs_strength >= 50:
-            atr_multiplier = 3.5
-        else:
-            atr_multiplier = 3.0
+        # تحسين معاملات ATR لنسبة مخاطرة/عائد أفضل
+        if abs_strength >= 80:    # إشارة قوية → مجال أوسع
+            stop_multiplier = 3.5    # زيادة الحماية (من 4.0)
+            profit_multiplier = 7.0  # أهداف أكبر (من 6.0) - RR ≈ 2:1
+        elif abs_strength >= 50:  # إشارة متوسطة → مجال متوسط
+            stop_multiplier = 3.0    # (من 3.5)
+            profit_multiplier = 6.0  # (من 5.0) - RR ≈ 2:1
+        else:                     # إشارة ضعيفة → مجال أقرب
+            stop_multiplier = 2.5    # (من 3.0)
+            profit_multiplier = 5.0  # (من 4.0) - RR ≈ 2:1
     
         if signal_strength > 0:  # إشارة شراء
-            stop_loss = entry_price - (atr_multiplier * atr_value)
-            take_profit = entry_price + (atr_multiplier * atr_value)
+            stop_loss = entry_price - (stop_multiplier * atr_value)
+            take_profit = entry_price + (profit_multiplier * atr_value)
         else:  # إشارة بيع
-            stop_loss = entry_price + (atr_multiplier * atr_value)
-            take_profit = entry_price - (atr_multiplier * atr_value)
+            stop_loss = entry_price + (stop_multiplier * atr_value)
+            take_profit = entry_price - (profit_multiplier * atr_value)
     
         return stop_loss, take_profit
     
     def execute_real_trade(self, signal_type, signal_strength, current_price, stop_loss, take_profit):
-        # تنظيف الأوامر أولاً إذا كانت ممتلئة
-        current_orders = self.get_algo_orders_count(self.symbol)
-        if current_orders >= self.MAX_ALGO_ORDERS:
-            self.cancel_farthest_orders(self.symbol, 2)
-        
         if signal_type == 'buy':
             if not self.manage_order_space(self.symbol):
                 self.send_notification("❌ تم إلغاء الصفقة - لا يمكن وضع أوامر الوقف")
@@ -830,7 +834,7 @@ class BNB_Trading_Bot:
         
             if signal_type == 'buy':
                 can_trade, usdt_balance = self.check_balance_before_trade(trade_size)
-            
+                        
                 if not can_trade:
                     available_balance = usdt_balance * 0.95
                     if available_balance >= 5:
@@ -865,9 +869,10 @@ class BNB_Trading_Bot:
                     order_id=order.get('orderId', 'N/A')
                 )
             
-                # وضع أوامر الوقف وجني الأرباح
-                if not self.manage_order_space(self.symbol):
-                    self.send_notification("❌ لا يمكن وضع أوامر الوقف - المساحة ممتلئة")
+                # التحقق من مساحة الأوامر مرة أخرى قبل وضع أوامر الوقف
+                order_status = self.get_order_space_status(self.symbol)
+                if order_status == "FULL":
+                    self.send_notification("⚠️ لا يمكن وضع أوامر الوقف - المساحة ممتلئة")
                     return True
             
                 try:
@@ -882,12 +887,12 @@ class BNB_Trading_Bot:
                         price=formatted_take_profit,
                         stopLimitTimeInForce='GTC'
                     )
-                
-                    self.send_notification(f"✅ تم وضع أوامر الوقف: SL ${formatted_stop_loss:.4f} | TP ${formatted_take_profit:.4f}")
+                    logger.info(f"✅ تم وضع أوامر الوقف: SL={formatted_stop_loss}, TP={formatted_take_profit}")
                 
                 except Exception as e:
                     error_msg = f"⚠️ فشل وضع أوامر الوقف: {e}"
                     self.send_notification(error_msg)
+                    logger.error(error_msg)
             
                 return True
             
@@ -947,53 +952,56 @@ class BNB_Trading_Bot:
             return False
     
     def bnb_strategy(self, data):
-        """استراتيجية التداول - أكثر صرامة عندما تكون الأوامر ممتلئة"""
+        """استراتيجية التداول - الإصدار المحسن"""
         if data is None or len(data) < 100:
-            return 'hold', 0, 0, 0
+            return 0, 0, 0, 0
         
         latest = data.iloc[-1]
         current_price = latest['close']
         atr_value = latest['atr']
         
-        # التحقق من عدد الأوامر
-        current_orders = self.get_algo_orders_count(self.symbol)
-        orders_full = current_orders >= 10  # أكثر من 8 أوامر
-        
         buy_strength = self.calculate_signal_strength(data, 'buy')
         sell_strength = self.calculate_signal_strength(data, 'sell')
         
-        if orders_full:
-            # شروط أكثر صرامة للشراء فقط
-            buy_threshold = 35  # زيادة من 25 إلى 35
-            sell_threshold = 25  # البيع يبقى كما هو
-            
-            if buy_strength > buy_threshold and buy_strength > sell_strength:
-                stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
-                    current_price, buy_strength, atr_value
-                )
-                return 'buy', buy_strength, stop_loss, take_profit
-                
-            elif sell_strength > sell_threshold and sell_strength > buy_strength:
-                stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
-                    current_price, -sell_strength, atr_value
-                )
-                return 'sell', sell_strength, stop_loss, take_profit
-            
-        else:
-            # الشروط العادية
-            if buy_strength > 25 and buy_strength > sell_strength:
-                stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
-                    current_price, buy_strength, atr_value
-                )
-                return 'buy', buy_strength, stop_loss, take_profit
-                
-            elif sell_strength > 25 and sell_strength > buy_strength:
-                stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
-                    current_price, -sell_strength, atr_value
-                )
-                return 'sell', sell_strength, stop_loss, take_profit
+        # الحصول على حالة مساحة الأوامر
+        order_space_status = self.get_order_space_status(self.symbol)
         
-        return 'hold', 0, 0, 0
+        # تطبيق العتبات المختلفة حسب حالة الأوامر
+        if buy_strength > 0 and buy_strength > sell_strength:
+            if order_space_status == "FULL":
+                # الأوامر ممتلئة - تطبيق العتبة المشددة
+                if buy_strength >= self.STRICT_BUY_THRESHOLD:
+                    stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
+                        current_price, buy_strength, atr_value
+                    )
+                    return 'buy', buy_strength, stop_loss, take_profit
+                else:
+                    logger.info(f"📊 إشارة شراء قوتها {buy_strength}% تم تجاهلها (العتبة المشددة: {self.STRICT_BUY_THRESHOLD}%)")
+                    return 'hold', 0, 0, 0
+            else:
+                # الأوامر متاحة - تطبيق العتبة الأساسية
+                if buy_strength >= self.BASELINE_BUY_THRESHOLD:
+                    stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
+                        current_price, buy_strength, atr_value
+                    )
+                    return 'buy', buy_strength, stop_loss, take_profit
+                else:
+                    logger.info(f"📊 إشارة شراء قوتها {buy_strength}% تم تجاهلها (العتبة الأساسية: {self.BASELINE_BUY_THRESHOLD}%)")
+                    return 'hold', 0, 0, 0
+                    
+        elif sell_strength > 0 and sell_strength > buy_strength:
+            # البيع لا يتأثر بمساحة الأوامر (عتبة ثابتة)
+            if sell_strength >= self.SELL_THRESHOLD:
+                stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
+                    current_price, -sell_strength, atr_value
+                )
+                return 'sell', sell_strength, stop_loss, take_profit
+            else:
+                logger.info(f"📊 إشارة بيع قوتها {sell_strength}% تم تجاهلها (عتبة البيع: {self.SELL_THRESHOLD}%)")
+                return 'hold', 0, 0, 0
+        
+        else:
+            return 'hold', 0, 0, 0
     
     def check_balance_before_trade(self, required_usdt):
         """التحقق من الرصيد قبل التنفيذ"""
@@ -1014,26 +1022,20 @@ class BNB_Trading_Bot:
         if data is None:
             return False
             
-        # التحقق من عدد الأوامر أولاً
-        current_orders = self.get_algo_orders_count(self.symbol)
-        orders_full = current_orders >= 10
-        
-        if orders_full:
-            self.send_notification("⚠️ <b>وضع الأوامر الممتلئة مفعل</b>\nشروط الشراء أكثر صرامة الآن")
-            
         signal_type, signal_strength, stop_loss, take_profit = self.bnb_strategy(data)
         latest = data.iloc[-1]
         current_price = latest['close']
         
         if signal_type in ['buy', 'sell']:
+            # إرسال إشعار تحليلي قبل التنفيذ
+            order_status = self.get_order_space_status(self.symbol)
+            analysis_msg = self.generate_signal_analysis(data, signal_type, signal_strength, order_status)
+            self.send_notification(analysis_msg)
+            
             success = self.execute_real_trade(signal_type, signal_strength, current_price, stop_loss, take_profit)
             if success:
                 level = self.get_strength_level(signal_strength)
                 msg = f"🎯 <b>{'شراء' if signal_type == 'buy' else 'بيع'} بمستوى {level}</b>\n\n"
-                
-                if orders_full and signal_type == 'buy':
-                    msg += "⚡ <b>تم الشراء بشروط مشددة</b>\n"
-                    
                 msg += f"قوة الإشارة: {signal_strength}%\n"
                 msg += f"حجم الصفقة: ${self.calculate_dollar_size(signal_strength, signal_type):.2f}\n"
                 msg += f"السعر: ${current_price:.4f}\n"
@@ -1041,12 +1043,34 @@ class BNB_Trading_Bot:
                 if signal_type == 'buy':
                     msg += f"وقف الخسارة: ${stop_loss:.4f}\n"
                     msg += f"جني الأرباح: ${take_profit:.4f}\n"
-                    msg += f"نسبة المخاطرة/العائد: 1:1\n"
+                    msg += f"نسبة المخاطرة/العائد: 1:{(take_profit - current_price) / (current_price - stop_loss):.2f}\n"
                 
+                msg += f"حالة الأوامر: {order_status}"
                 self.send_notification(msg)
             return success
         
         return False
+
+    def generate_signal_analysis(self, data, signal_type, signal_strength, order_status):
+        """إنشاء تحليل مفصل للإشارة"""
+        latest = data.iloc[-1]
+        
+        analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()})</b>\n\n"
+        analysis += f"قوة الإشارة: {signal_strength}%\n"
+        analysis += f"السعر الحالي: ${latest['close']:.4f}\n"
+        analysis += f"الاتجاه العام: {'صاعد' if latest['close'] > latest['ema200'] else 'هبوطي'}\n"
+        analysis += f"RSI: {latest['rsi']:.1f}\n"
+        analysis += f"MACD: {latest['macd']:.6f}\n"
+        analysis += f"الحجم: {latest['vol_ratio']:.1f}x المتوسط\n"
+        analysis += f"حالة الأوامر: {order_status}\n"
+        
+        if signal_type == 'buy':
+            required_threshold = self.STRICT_BUY_THRESHOLD if order_status == "FULL" else self.BASELINE_BUY_THRESHOLD
+            analysis += f"العتبة المطلوبة: {required_threshold}%\n"
+        
+        analysis += f"القرار: {'✅ مقبولة' if signal_strength >= required_threshold else '❌ مرفوضة'}"
+        
+        return analysis
     
     def send_performance_report(self):
         try:
@@ -1059,6 +1083,7 @@ class BNB_Trading_Bot:
             profit_loss_percent = (profit_loss / self.initial_balance) * 100 if self.initial_balance > 0 else 0
             
             current_orders = self.get_algo_orders_count(self.symbol)
+            order_status = self.get_order_space_status(self.symbol)
             
             balance_details = ""
             for asset, balance_info in balances.items():
@@ -1068,12 +1093,13 @@ class BNB_Trading_Bot:
                     else:
                         balance_details += f"{asset}: {balance_info['total']:.6f}\n"
             
-            message = f"📊 <b>تقرير أداء البوت</b>\n\n"
+            message = f"📊 <b>تقرير أداء البوت المحسن</b>\n\n"
             message += f"الرصيد الابتدائي: ${self.initial_balance:.2f}\n"
             message += f"الرصيد الحالي: ${total_balance:.2f}\n"
             message += f"الأرباح/الخسائر: ${profit_loss:.2f} ({profit_loss_percent:+.2f}%)\n"
             message += f"الأوامر النشطة: {current_orders}/{self.MAX_ALGO_ORDERS}\n"
-            message += f"نطاق الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\n\n"
+            message += f"حالة الأوامر: {order_status}\n"
+            message += f"عتبة الشراء: {self.BASELINE_BUY_THRESHOLD}% (عادي) / {self.STRICT_BUY_THRESHOLD}% (مشدد)\n\n"
             message += f"<b>تفاصيل الرصيد:</b>\n{balance_details}"
             
             if bnb_price:
@@ -1122,6 +1148,11 @@ class BNB_Trading_Bot:
             message += f"• إشارات متوسطة: {signal_analysis['medium_signals']} ({signal_analysis['medium_win_rate']:.1f}% نجاح)\n"
             message += f"• إشارات ضعيفة: {signal_analysis['weak_signals']} ({signal_analysis['weak_win_rate']:.1f}% نجاح)\n\n"
             
+            message += f"⚙️ <b>إعدادات العتبات:</b>\n"
+            message += f"• شراء أساسي: {self.BASELINE_BUY_THRESHOLD}%\n"
+            message += f"• شراء مشدد: {self.STRICT_BUY_THRESHOLD}%\n"
+            message += f"• بيع: {self.SELL_THRESHOLD}%\n\n"
+            
             message += f"💡 <b>توصيات:</b>\n"
             for rec in recommendations:
                 message += f"• {rec}\n"
@@ -1140,7 +1171,15 @@ class BNB_Trading_Bot:
         flask_thread.start()
         
         interval_minutes = 15
-        self.send_notification(f"🚀 بدء تشغيل بوت تداول BNB (الخطة المتحفظة)\n\nسيعمل البوت على فحص السوق كل {interval_minutes} دقيقة\nنطاق حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\nنسبة الوقف/الجني: 1:1")
+        self.send_notification(
+            f"🚀 بدء تشغيل بوت تداول BNB المحسن\n\n"
+            f"سيعمل البوت على فحص السوق كل {interval_minutes} دقيقة\n"
+            f"نطاق حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\n"
+            f"عتبة الشراء الأساسية: {self.BASELINE_BUY_THRESHOLD}%\n"
+            f"عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%\n"
+            f"عتبة البيع: {self.SELL_THRESHOLD}%\n"
+            f"الحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}"
+        )
         
         self.send_performance_report()
         
@@ -1173,7 +1212,7 @@ class BNB_Trading_Bot:
 
 if __name__ == "__main__":
     try:
-        print("🚀 بدء تشغيل بوت تداول BNB (الخطة المتحفظة)...")
+        print("🚀 بدء تشغيل بوت تداول BNB المحسن...")
         print("=" * 60)
         
         flask_thread = threading.Thread(target=run_flask_app, daemon=True)
