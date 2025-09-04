@@ -46,6 +46,19 @@ def daily_report():
     except Exception as e:
         return {'error': str(e)}
 
+@app.route('/time_schedule')
+def time_schedule():
+    try:
+        bot = BNB_Trading_Bot()
+        schedule = bot.get_daily_optimal_schedule()
+        return {
+            'today': datetime.now().strftime('%Y-%m-%d'),
+            'optimal_windows': schedule,
+            'total_windows': len(schedule)
+        }
+    except Exception as e:
+        return {'error': str(e)}
+
 def run_flask_app():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
@@ -60,6 +73,120 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+class TimeWeightManager:
+    def __init__(self, weights_file='bnb_time_weights_advanced.csv'):
+        # تحميل أوزان التوقيت من الملف
+        self.weights_df = pd.read_csv(weights_file, index_col=0, encoding='utf-8-sig')
+        self.weekdays_arabic = ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد']
+        self.weekdays_english = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        
+        # تحويل الأعمدة الزمنية إلى تنسيق مناسب
+        self.time_slots = self.weights_df.columns.tolist()
+        
+        # إنشاء قاموس للتحويل بين الأيام العربية والإنجليزية
+        self.weekday_map = {eng: arb for eng, arb in zip(self.weekdays_english, self.weekdays_arabic)}
+        
+        # قائمة نوافذ التداول المثلى (سيتم ملؤها تلقائياً)
+        self.optimal_windows = self._load_optimal_windows()
+        
+        # تتبع النوافذ التي تم إرسال إنذار لها
+        self.notified_windows = set()
+    
+    def _load_optimal_windows(self, min_strength=7):
+        """تحميل نوافذ التداول المثلى من ملف الأوزان"""
+        optimal_windows = []
+        
+        for weekday_arabic in self.weekdays_arabic:
+            for time_slot in self.time_slots:
+                weight = self.weights_df.loc[weekday_arabic, time_slot]
+                if abs(weight) >= min_strength:
+                    hour, minute = map(int, time_slot.split(':'))
+                    optimal_windows.append({
+                        'weekday_arabic': weekday_arabic,
+                        'weekday_english': self._get_english_weekday(weekday_arabic),
+                        'time': time_slot,
+                        'hour': hour,
+                        'minute': minute,
+                        'weight': weight,
+                        'signal': 'BUY' if weight > 0 else 'SELL',
+                        'strength': abs(weight)
+                    })
+        
+        return optimal_windows
+    
+    def _get_english_weekday(self, arabic_weekday):
+        """تحويل اليوم من العربية إلى الإنجليزية"""
+        for eng, arb in self.weekday_map.items():
+            if arb == arabic_weekday:
+                return eng
+        return arabic_weekday
+    
+    def get_current_time_weight(self):
+        """الحصول على وزن الوقت الحالي"""
+        now = datetime.now()
+        current_weekday_english = now.strftime('%A')
+        current_weekday_arabic = self.weekday_map.get(current_weekday_english, current_weekday_english)
+        
+        current_time = now.strftime('%H:%M')
+        current_hour = now.hour
+        current_minute = now.minute
+        
+        # البحث عن الوزن المناسب للوقت الحالي
+        try:
+            weight = self.weights_df.loc[current_weekday_arabic, current_time]
+            return {
+                'weight': weight,
+                'signal': 'BUY' if weight > 0 else 'SELL',
+                'strength': abs(weight),
+                'time': f"{current_weekday_arabic} {current_time}",
+                'hour': current_hour,
+                'minute': current_minute
+            }
+        except KeyError:
+            return None
+    
+    def get_upcoming_optimal_windows(self, lookahead_minutes=30):
+        """الحصول على النوافذ المثلى القادمة في الدقائق التالية"""
+        now = datetime.now()
+        current_weekday_english = now.strftime('%A')
+        current_time = now.strftime('%H:%M')
+        
+        upcoming_windows = []
+        
+        for window in self.optimal_windows:
+            if window['weekday_english'] != current_weekday_english:
+                continue
+            
+            # حساب الوقت المتبقي للنافذة
+            window_time = datetime.now().replace(hour=window['hour'], minute=window['minute'], second=0, microsecond=0)
+            time_diff = (window_time - now).total_seconds() / 60  # الفرق بالدقائق
+            
+            if 0 <= time_diff <= lookahead_minutes:
+                upcoming_windows.append({
+                    **window,
+                    'minutes_away': time_diff,
+                    'window_time': window_time
+                })
+        
+        return sorted(upcoming_windows, key=lambda x: x['minutes_away'])
+    
+    def check_alert_windows(self, alert_minutes=5):
+        """التحقق من النوافذ التي تحتاج إلى إنذار مسبق"""
+        now = datetime.now()
+        upcoming_windows = self.get_upcoming_optimal_windows(alert_minutes + 2)
+        
+        alerts = []
+        
+        for window in upcoming_windows:
+            window_id = f"{window['weekday_english']}_{window['time']}"
+            
+            # التحقق إذا لم يتم إرسال إنذار لهذه النافذة بعد
+            if window_id not in self.notified_windows and window['minutes_away'] <= alert_minutes:
+                alerts.append(window)
+                self.notified_windows.add(window_id)
+        
+        return alerts
 
 class TelegramNotifier:
     def __init__(self, token, chat_id):
@@ -166,6 +293,12 @@ class BNB_Trading_Bot:
             logger.error(error_msg)
             raise ConnectionError(error_msg)
             
+        # إضافة مدير الأوزان الزمنية
+        self.time_weight_manager = TimeWeightManager('bnb_time_weights_advanced.csv')
+        
+        # معامل تضخيم الوزن الزمني (0-1)
+        self.TIME_WEIGHT_FACTOR = 0.20  # 20% تأثير للوزن الزمني
+        
         self.fee_rate = 0.0005
         self.slippage = 0.00015
         self.trades = []
@@ -198,7 +331,8 @@ class BNB_Trading_Bot:
                     f"الحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}\n"
                     f"عتبة الشراء الأساسية: {self.BASELINE_BUY_THRESHOLD}%\n"
                     f"عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%\n"
-                    f"عتبة البيع: {self.SELL_THRESHOLD}%"
+                    f"عتبة البيع: {self.SELL_THRESHOLD}%\n"
+                    f"تأثير الوزن الزمني: {self.TIME_WEIGHT_FACTOR * 100}%"
                 )
         except Exception as e:
             logger.error(f"خطأ في جلب الرصيد الابتدائي: {e}")
@@ -360,6 +494,7 @@ class BNB_Trading_Bot:
             print(f"عتبة الشراء الأساسية: {self.BASELINE_BUY_THRESHOLD}%")
             print(f"عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%")
             print(f"عتبة البيع: {self.SELL_THRESHOLD}%")
+            print(f"تأثير الوزن الزمني: {self.TIME_WEIGHT_FACTOR * 100}%")
             print("="*50)
             
             return True
@@ -534,71 +669,95 @@ class BNB_Trading_Bot:
             return False
     
     def calculate_signal_strength(self, data, signal_type='buy'):
-        """تقييم قوة الإشارة من -100 إلى +100% - مع التحسينات الجديدة"""
+        """تقييم قوة الإشارة من -100 إلى +100% - مع دمج الأوزان الزمنية"""
         latest = data.iloc[-1]
         score = 0
         
-        # 1. مرشح اتجاه السوق (25%) - الجديد
+        # 1. الوزن الزمني (20%) - الجديد
+        time_weight_score = self.calculate_time_weight_score(signal_type)
+        score += time_weight_score
+        
+        # 2. اتجاه السوق (15%) - مخفض من 25%
         market_trend_score = self.calculate_market_trend_score(data, signal_type)
         score += market_trend_score
         
-        # 2. المتوسطات المتحركة (25%) - مخفض من 30%
+        # 3. المتوسطات المتحركة (20%) - مخفض من 25%
         ema_bullish = latest['ema9'] > latest['ema21'] > latest['ema50'] and latest['close'] > latest['ema200']
         ema_bearish = latest['ema9'] < latest['ema21'] < latest['ema50'] and latest['close'] < latest['ema200']
         
         if signal_type == 'buy':
-            if ema_bullish: score += 25
-            elif ema_bearish: score -= 25
+            if ema_bullish: score += 20
+            elif ema_bearish: score -= 20
         else:
-            if ema_bearish: score += 25
-            elif ema_bullish: score -= 25
+            if ema_bearish: score += 20
+            elif ema_bullish: score -= 20
         
-        # 3. RSI (20%) - مخفض من 25%
+        # 4. RSI (15%) - مخفض من 20%
         if signal_type == 'buy':
-            if latest['rsi'] < 30: score += 20
-            elif latest['rsi'] > 70: score -= 20
-            elif 40 < latest['rsi'] < 60: score += 10
+            if latest['rsi'] < 30: score += 15
+            elif latest['rsi'] > 70: score -= 15
+            elif 40 < latest['rsi'] < 60: score += 8
         else:
-            if latest['rsi'] > 70: score += 20
-            elif latest['rsi'] < 30: score -= 20
-            elif 40 < latest['rsi'] < 60: score += 10
+            if latest['rsi'] > 70: score += 15
+            elif latest['rsi'] < 30: score -= 15
+            elif 40 < latest['rsi'] < 60: score += 8
         
-        # 4. MACD (15%) - مخفض من 20%
+        # 5. MACD (14%) - مخفض من 15%
         macd_strength = (latest['macd'] - latest['macd_sig']) / abs(latest['macd_sig']) if latest['macd_sig'] != 0 else 0
         
         if signal_type == 'buy':
-            if macd_strength > 0.2: score += 15
-            elif macd_strength < -0.1: score -= 15
+            if macd_strength > 0.2: score += 14
+            elif macd_strength < -0.1: score -= 14
         else:
-            if macd_strength < -0.2: score += 15
-            elif macd_strength > 0.1: score -= 15
+            if macd_strength < -0.2: score += 14
+            elif macd_strength > 0.1: score -= 14
         
-        # 5. Bollinger Bands (15%) - مخفض من 20%
+        # 6. Bollinger Bands (10%) - مخفض من 12%
         bb_position = (latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower'])
         
         if signal_type == 'buy':
-            if bb_position < 0.2: score += 15
-            elif bb_position > 0.8: score -= 15
+            if bb_position < 0.2: score += 10
+            elif bb_position > 0.8: score -= 10
         else:
-            if bb_position > 0.8: score += 15
-            elif bb_position < 0.2: score -= 15
+            if bb_position > 0.8: score += 10
+            elif bb_position < 0.2: score -= 10
         
-        # 6. مؤشر الزخم الإضافي (CCI) - الجديد (10%)
+        # 7. مؤشر الزخم الإضافي (CCI) - (8%) مخفض من 10%
         cci_score = self.calculate_cci_momentum(data, signal_type)
         score += cci_score
         
-        # 7. Volume (10%) - مخفض من 15%
+        # 8. Volume (8%) - مخفض من 10%
         volume_strength = latest['vol_ratio']
         
         if signal_type == 'buy':
-            if volume_strength > 2.0 and latest['close'] > latest['open']: score += 10
-            elif volume_strength > 2.0 and latest['close'] < latest['open']: score -= 10
+            if volume_strength > 2.0 and latest['close'] > latest['open']: score += 8
+            elif volume_strength > 2.0 and latest['close'] < latest['open']: score -= 8
         else:
-            if volume_strength > 2.0 and latest['close'] < latest['open']: score += 10
-            elif volume_strength > 2.0 and latest['close'] > latest['open']: score -= 10
+            if volume_strength > 2.0 and latest['close'] < latest['open']: score += 8
+            elif volume_strength > 2.0 and latest['close'] > latest['open']: score -= 8
         
         return max(min(score, 100), -100)
-    
+
+    def calculate_time_weight_score(self, signal_type):
+        """حساب درجة الوزن الزمني"""
+        time_signal = self.time_weight_manager.get_current_time_weight()
+        
+        if not time_signal:
+            return 0
+        
+        # الوزن الزمني الأساسي (من -10 إلى +10)
+        base_time_weight = time_signal['weight']
+        
+        # تحويل إلى نطاق -20 إلى +20 (20% من 100)
+        time_score = base_time_weight * 2.0
+        
+        # إذا كانت الإشارة المطلوبة لا تتطابق مع الإشارة الزمنية
+        if (signal_type == 'buy' and time_signal['signal'] == 'SELL') or \
+           (signal_type == 'sell' and time_signal['signal'] == 'BUY'):
+            time_score = -abs(time_score)  # عقوبة أكبر لتعارض الإشارات
+        
+        return time_score
+
     def calculate_market_trend_score(self, data, signal_type):
         """حساب درجة اتجاه السوق (الجديدة)"""
         latest = data.iloc[-1]
@@ -609,19 +768,19 @@ class BNB_Trading_Bot:
         if signal_type == 'buy':
             # تجنب الشراء في اتجاه هبوطي قوي
             if price_vs_ema200 < -5:  # السعر تحت EMA200 بأكثر من 5%
-                return -25  # عقوبة كبيرة للشراء في اتجاه هبوطي
+                return -15  # عقوبة كبيرة للشراء في اتجاه هبوطي
             elif price_vs_ema200 < -2:  # السعر تحت EMA200 بـ 2-5%
-                return -15
+                return -8
             elif price_vs_ema200 > 5:  # السعر فوق EMA200 بأكثر من 5%
-                return +15  # مكافأة للشراء في اتجاه صاعد
+                return +10  # مكافأة للشراء في اتجاه صاعد
         else:
             # مكافأة البيع في اتجاه هبوطي
             if price_vs_ema200 < -5:
-                return +20
+                return +12
             elif price_vs_ema200 < -2:
-                return +10
+                return +6
             elif price_vs_ema200 > 5:
-                return -10  # عقوبة للبيع في اتجاه صاعد قوي
+                return -8  # عقوبة للبيع في اتجاه صاعد قوي
         
         return 0
     
@@ -640,14 +799,14 @@ class BNB_Trading_Bot:
             
             if signal_type == 'buy':
                 if current_cci < -100:  # ذروة بيع
-                    return 10
+                    return 8
                 elif current_cci > 100:  # ذروة شراء
-                    return -10
+                    return -8
             else:
                 if current_cci > 100:  # ذروة شراء
-                    return 10
+                    return 8
                 elif current_cci < -100:  # ذروة بيع
-                    return -10
+                    return -8
                     
         except Exception as e:
             logger.error(f"خطأ في حساب CCI: {e}")
@@ -1080,6 +1239,48 @@ class BNB_Trading_Bot:
         
         return analysis
     
+    def check_time_alerts(self):
+        """التحقق من الإنذارات الزمنية وإرسالها"""
+        try:
+            alert_windows = self.time_weight_manager.check_alert_windows(alert_minutes=5)
+            
+            for window in alert_windows:
+                alert_message = self.generate_time_alert_message(window)
+                self.send_notification(alert_message)
+                
+        except Exception as e:
+            logger.error(f"خطأ في التحقق من الإنذارات الزمنية: {e}")
+
+    def generate_time_alert_message(self, window):
+        """إنشاء رسالة إنذار زمني"""
+        emoji = "🟢" if window['signal'] == 'BUY' else "🔴"
+        action = "شراء" if window['signal'] == 'BUY' else "بيع"
+        
+        message = f"⏰ <b>إنذار مسبق - نافذة تداول قريبة</b>\n\n"
+        message += f"{emoji} إشارة {action} قوية قادمة خلال {window['minutes_away']:.1f} دقائق\n"
+        message += f"📅 اليوم: {window['weekday_arabic']}\n"
+        message += f"🕒 الوقت: {window['time']}\n"
+        message += f"💪 قوة الإشارة: {window['strength']:.1f}/10\n"
+        message += f"📊 الوزن: {window['weight']:.2f}\n\n"
+        message += f"⚡ استعد لفرصة تداول محتملة"
+        
+        return message
+
+    def get_daily_optimal_schedule(self):
+        """الحصول على جدول النوافذ المثلى لليوم"""
+        today_english = datetime.now().strftime('%A')
+        today_arabic = self.time_weight_manager.weekday_map.get(today_english, today_english)
+        
+        today_windows = [
+            window for window in self.time_weight_manager.optimal_windows 
+            if window['weekday_arabic'] == today_arabic
+        ]
+        
+        # ترتيب النوافذ حسب الوقت
+        today_windows.sort(key=lambda x: (x['hour'], x['minute']))
+        
+        return today_windows
+
     def send_performance_report(self):
         try:
             total_balance, balances, bnb_price = self.get_account_balance_details()
@@ -1169,6 +1370,7 @@ class BNB_Trading_Bot:
             
             # إعادة تعيين إحصائيات اليوم
             self.performance_analyzer.reset_daily_stats(performance['daily_end_balance'])
+            
             
         except Exception as e:
             error_msg = f"❌ خطأ في إرسال التقرير اليومي: {e}"
