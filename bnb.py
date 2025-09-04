@@ -269,9 +269,9 @@ class BNB_Trading_Bot:
         self.load_trade_history()
         
         # إعدادات العتبات الجديدة
-        self.BASELINE_BUY_THRESHOLD = 30  # رفع من 25 إلى 35
-        self.STRICT_BUY_THRESHOLD = 35    # رفع من 20 إلى 45 (للأوامر الممتلئة)
-        self.SELL_THRESHOLD = 30         # عتبة البيع تبقى كما هي
+        self.BASELINE_BUY_THRESHOLD = 60  # رفع من 25 إلى 35
+        self.STRICT_BUY_THRESHOLD = 70    # رفع من 20 إلى 45 (للأوامر الممتلئة)
+        self.SELL_THRESHOLD = 60         # عتبة البيع تبقى كما هي
         
         self.api_key = api_key or os.environ.get('BINANCE_API_KEY')
         self.api_secret = api_secret or os.environ.get('BINANCE_API_SECRET')
@@ -669,98 +669,150 @@ class BNB_Trading_Bot:
             return False
     
     def calculate_signal_strength(self, data, signal_type='buy'):
-        """تقييم قوة الإشارة من -100 إلى +100% - بدون الوزن الزمني"""
+        """تقييم قوة الإشارة من -100 إلى +100% مع الأوزان الجديدة"""
         latest = data.iloc[-1]
         score = 0
-    
+
         # تسجيل مساهمة كل مؤشر
         indicator_contributions = {}
-    
-        # 1. اتجاه السوق (20%) - زيادة من 15%
+
+        # 1. اتجاه السوق (25%) - المؤشر الرئيسي
         market_trend_score = self.calculate_market_trend_score(data, signal_type)
         score += market_trend_score
         indicator_contributions['market_trend'] = market_trend_score
-    
-        # 2. المتوسطات المتحركة (25%) - زيادة من 20%
-        ema_bullish = latest['ema9'] > latest['ema21'] > latest['ema50'] and latest['close'] > latest['ema200']
-        ema_bearish = latest['ema9'] < latest['ema21'] < latest['ema50'] and latest['close'] < latest['ema200']
-    
-        ema_score = 0
-        if signal_type == 'buy':
-            if ema_bullish: ema_score = 25
-            elif ema_bearish: ema_score = -25
-        else:
-            if ema_bearish: ema_score = 25
-            elif ema_bullish: ema_score = -25
-    
+
+        # 2. المتوسطات المتحركة (20%) - EMA 34 بدلاً من المتعددة
+        ema_score = self.calculate_ema_score(data, signal_type)
         score += ema_score
         indicator_contributions['moving_averages'] = ema_score
-    
-        # 3. RSI (18%) - زيادة من 15%
-        rsi_score = 0
-        if signal_type == 'buy':
-            if latest['rsi'] < 30: rsi_score = 18
-            elif latest['rsi'] > 70: rsi_score = -18
-            elif 40 < latest['rsi'] < 60: rsi_score = 9
-        else:
-            if latest['rsi'] > 70: rsi_score = 18
-            elif latest['rsi'] < 30: rsi_score = -18
-            elif 40 < latest['rsi'] < 60: rsi_score = 9
-    
-        score += rsi_score
-        indicator_contributions['rsi'] = rsi_score
-    
-        # 4. MACD (16%) - زيادة من 14%
-        macd_strength = (latest['macd'] - latest['macd_sig']) / abs(latest['macd_sig']) if latest['macd_sig'] != 0 else 0
-    
-        macd_score = 0
-        if signal_type == 'buy':
-            if macd_strength > 0.2: macd_score = 16
-            elif macd_strength < -0.1: macd_score = -16
-        else:
-            if macd_strength < -0.2: macd_score = 16
-            elif macd_strength > 0.1: macd_score = -16
-    
+
+        # 3. MACD (20%) - زيادة الوزن
+        macd_score = self.calculate_macd_score(data, signal_type)
         score += macd_score
         indicator_contributions['macd'] = macd_score
-    
-        # 5. Bollinger Bands (12%) - زيادة من 10%
-        bb_position = (latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower'])
-    
-        bb_score = 0
-        if signal_type == 'buy':
-            if bb_position < 0.2: bb_score = 12
-            elif bb_position > 0.8: bb_score = -12
-        else:
-            if bb_position > 0.8: bb_score = 12
-            elif bb_position < 0.2: bb_score = -12
-    
+
+        # 4. RSI (15%) - تقليل الوزن قليلاً
+        rsi_score = self.calculate_rsi_score(data, signal_type)
+        score += rsi_score
+        indicator_contributions['rsi'] = rsi_score
+
+        # 5. بولينجر باند (20%) - زيادة الوزن
+        bb_score = self.calculate_bollinger_bands_score(data, signal_type)
         score += bb_score
         indicator_contributions['bollinger_bands'] = bb_score
-    
-        # 6. مؤشر الزخم الإضافي (CCI) - (12%) زيادة من 8%
-        cci_score = self.calculate_cci_momentum(data, signal_type)
-        score += cci_score
-        indicator_contributions['cci'] = cci_score
-    
-        # 7. Volume (12%) - زيادة من 8%
-        volume_strength = latest['vol_ratio']
-    
-        volume_score = 0
-        if signal_type == 'buy':
-            if volume_strength > 2.0 and latest['close'] > latest['open']: volume_score = 12
-            elif volume_strength > 2.0 and latest['close'] < latest['open']: volume_score = -12
-        else:
-            if volume_strength > 2.0 and latest['close'] < latest['open']: volume_score = 12
-            elif volume_strength > 2.0 and latest['close'] > latest['open']: volume_score = -12
-    
+
+        # 6. الحجم (20%) - إضافة مؤشر الحجم كعنصر رئيسي
+        volume_score = self.calculate_volume_score(data, signal_type)
         score += volume_score
         indicator_contributions['volume'] = volume_score
-    
+
         # تخزين مساهمات المؤشرات للاستخدام لاحقاً
         self.last_indicator_contributions = indicator_contributions
-    
+
         return max(min(score, 100), -100)
+
+    def calculate_ema_score(self, data, signal_type):
+        """حساب درجة المتوسطات المتحركة (EMA 34 كأساس)"""
+        latest = data.iloc[-1]
+    
+        # استخدام EMA 34 كمتوسط رئيسي
+        ema_34_bullish = latest['close'] > latest['ema34']
+        ema_34_bearish = latest['close'] < latest['ema34']
+    
+        if signal_type == 'buy':
+            if ema_34_bullish: 
+                return 20  # أعلى درجة للاتجاه الصاعد
+            elif ema_34_bearish: 
+                return -15  # عقوبة للشراء في اتجاه هبوطي
+        else:
+            if ema_34_bearish: 
+                return 20  # أعلى درجة للاتجاه الهبوطي
+            elif ema_34_bullish: 
+                return -15  # عقوبة للبيع في اتجاه صاعد
+    
+        return 0
+
+    def calculate_macd_score(self, data, signal_type):
+        """حساب درجة MACD مع تحسينات"""
+        latest = data.iloc[-1]
+        macd_strength = (latest['macd'] - latest['macd_sig']) / abs(latest['macd_sig']) if latest['macd_sig'] != 0 else 0
+
+       if signal_type == 'buy':
+            if macd_strength > 0.25:  # إشارة شراء قوية
+                return 20
+            elif macd_strength > 0.1:  # إشارة شراء متوسطة
+                return 10
+            elif macd_strength < -0.2:  # إشارة بيع قوية (عقوبة للشراء)
+                return -20
+        else:
+            if macd_strength < -0.25:  # إشارة بيع قوية
+                return 20
+            elif macd_strength < -0.1:  # إشارة بيع متوسطة
+                return 10
+            elif macd_strength > 0.2:  # إشارة شراء قوية (عقوبة للبيع)
+                return -20
+    
+        return 0
+
+    def calculate_rsi_score(self, data, signal_type):
+        """حساب درجة RSI مع تحسينات"""
+        latest = data.iloc[-1]
+     
+       if signal_type == 'buy':
+            if latest['rsi'] < 30:  # ذروة بيع
+                return 15
+            elif latest['rsi'] < 40:  # منطقة بيع
+                return 8
+            elif latest['rsi'] > 70:  # ذروة شراء (عقوبة)
+                return -15
+        else:
+            if latest['rsi'] > 70:  # ذروة شراء
+                return 15
+            elif latest['rsi'] > 60:  # منطقة شراء
+                return 8
+            elif latest['rsi'] < 30:  # ذروة بيع (عقوبة)
+                return -15
+    
+        return 0
+
+    def calculate_bollinger_bands_score(self, data, signal_type):
+        """حساب درجة بولينجر باند مع تحسينات"""
+        latest = data.iloc[-1]
+        bb_position = (latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower'])
+
+        if signal_type == 'buy':
+            if bb_position < 0.1:  # قرب النطاق السفلي (فرصة شراء)
+                return 20
+            elif bb_position < 0.3:  # منطقة شراء جيدة
+                return 10
+            elif bb_position > 0.9:  # قرب النطاق العلوي (عقوبة)
+                return -20
+        else:
+            if bb_position > 0.9:  # قرب النطاق العلوي (فرصة بيع)
+                return 20
+            elif bb_position > 0.7:  # منطقة بيع جيدة
+                return 10
+            elif bb_position < 0.1:  # قرب النطاق السفلي (عقوبة)
+                return -20
+    
+        return 0
+
+    def calculate_volume_score(self, data, signal_type):
+        """حساب درجة الحجم كعنصر رئيسي"""
+        latest = data.iloc[-1]
+        volume_ratio = latest['vol_ratio']
+    
+        # التأكد من وجود حركة سعرية في اتجاه الإشارة
+        price_confirmation = (latest['close'] > latest['open']) if signal_type == 'buy' else (latest['close'] < latest['open'])
+    
+        if volume_ratio > 2.0 and price_confirmation:
+            return 20  # حجم عالي مع تأكيد السعر
+        elif volume_ratio > 1.5 and price_confirmation:
+            return 10  # حجم جيد مع تأكيد السعر
+        elif volume_ratio > 2.0 and not price_confirmation:
+            return -15  # حجم عالي بدون تأكيد السعر (تحذير)
+    
+        return 0
 
     def calculate_time_weight_score(self, signal_type):
         """حساب درجة الوزن الزمني"""
@@ -955,6 +1007,8 @@ class BNB_Trading_Bot:
             # حساب جميع المؤشرات المطلوبة
             data['rsi'] = self.calculate_rsi(data['close'])
             data['atr'] = self.calculate_atr(data)
+
+            data['ema34'] = data['close'].ewm(span=34, adjust=False).mean()
         
             # المتوسطات المتحركة الأسية
             data['ema200'] = data['close'].ewm(span=200, adjust=False).mean()
@@ -1239,42 +1293,41 @@ class BNB_Trading_Bot:
     def generate_signal_analysis(self, data, signal_type, signal_strength, order_status):
         """إنشاء تحليل مفصل للإشارة مع نسبة مساهمة كل مؤشر"""
         latest = data.iloc[-1]
-    
-        analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()})</b>\n\n"
+
+        analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()}) - النظام الجديد</b>\n\n"
         analysis += f"قوة الإشارة: {signal_strength}%\n"
         analysis += f"السعر الحالي: ${latest['close']:.4f}\n"
-        analysis += f"الاتجاه العام: {'صاعد' if latest['close'] > latest['ema200'] else 'هبوطي'}\n\n"
-    
-        # إضافة مساهمة كل مؤشر
-        analysis += "📈 <b>مساهمة المؤشرات:</b>\n"
-    
+        analysis += f"الاتجاه العام (EMA 34): {'صاعد' if latest['close'] > latest['ema34'] else 'هبوطي'}\n\n"
+
+        # إضافة مساهمة كل مؤشر مع الأوزان الجديدة
+        analysis += "📈 <b>مساهمة المؤشرات (الأوزان الجديدة):</b>\n"
+
         if hasattr(self, 'last_indicator_contributions'):
             contributions = self.last_indicator_contributions
-        
-            # تحويل أسماء المؤشرات للعربية (بدون الوزن الزمني)
+    
+            # تحويل أسماء المؤشرات للعربية مع الأوزان
             indicator_names = {
-                'market_trend': 'اتجاه السوق',
-                'moving_averages': 'المتوسطات المتحركة',
-                'rsi': 'مؤشر RSI',
-                'macd': 'مؤشر MACD',
-                'bollinger_bands': 'بولينجر باند',
-                'cci': 'مؤشر CCI',
-                'volume': 'الحجم'
+                'market_trend': 'اتجاه السوق (25%)',
+                'moving_averages': 'المتوسطات المتحركة (20%)',
+                'macd': 'مؤشر MACD (20%)',
+                'rsi': 'مؤشر RSI (15%)',
+                'bollinger_bands': 'بولينجر باند (20%)',
+                'volume': 'الحجم (20%)'
             }
-        
+    
             for indicator, value in contributions.items():
-                # تخطي الوزن الزمني إذا كان موجوداً
-                if indicator == 'time_weight':
-                    continue
-                
                 arabic_name = indicator_names.get(indicator, indicator)
                 emoji = "🟢" if value > 0 else "🔴" if value < 0 else "⚪"
                 analysis += f"{emoji} {arabic_name}: {value:+.1f}\n"
+
     
         analysis += f"\n📊 <b>التفاصيل الفنية:</b>\n"
+        analysis += f"EMA 34: ${latest['ema34']:.4f}\n"
+        analysis += f"السعر/EMA 34: {((latest['close'] - latest['ema34']) / latest['ema34'] * 100):+.2f}%\n"
         analysis += f"RSI: {latest['rsi']:.1f}\n"
         analysis += f"MACD: {latest['macd']:.6f}\n"
         analysis += f"الحجم: {latest['vol_ratio']:.1f}x المتوسط\n"
+        analysis += f"بولينجر: {((latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower']) * 100):.1f}%\n"
         analysis += f"حالة الأوامر: {order_status}\n"
     
         # تعريف المتغير مسبقاً لتجنب الخطأ
