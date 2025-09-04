@@ -269,9 +269,9 @@ class BNB_Trading_Bot:
         self.load_trade_history()
         
         # إعدادات العتبات الجديدة
-        self.BASELINE_BUY_THRESHOLD = 35  # رفع من 25 إلى 35
-        self.STRICT_BUY_THRESHOLD = 45    # رفع من 20 إلى 45 (للأوامر الممتلئة)
-        self.SELL_THRESHOLD = 25          # عتبة البيع تبقى كما هي
+        self.BASELINE_BUY_THRESHOLD = 30  # رفع من 25 إلى 35
+        self.STRICT_BUY_THRESHOLD = 35    # رفع من 20 إلى 45 (للأوامر الممتلئة)
+        self.SELL_THRESHOLD = 30         # عتبة البيع تبقى كما هي
         
         self.api_key = api_key or os.environ.get('BINANCE_API_KEY')
         self.api_secret = api_secret or os.environ.get('BINANCE_API_SECRET')
