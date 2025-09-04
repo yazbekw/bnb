@@ -628,11 +628,13 @@ class BNB_Trading_Bot:
     def calculate_cci_momentum(self, data, signal_type, period=20):
         """حساب مؤشر CCI للزخم (الجديد)"""
         try:
-            latest = data.iloc[-1]
+            # حساب CCI بشكل صحيح
             typical_price = (data['high'] + data['low'] + data['close']) / 3
             sma = typical_price.rolling(window=period).mean()
-            mad = typical_price.rolling(window=period).apply(lambda x: np.mean(np.abs(x - np.mean(x))))
-            cci = (typical_price - sma) / (0.015 * mad)
+            mean_deviation = typical_price.rolling(window=period).apply(
+                lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+            )
+            cci = (typical_price - sma) / (0.015 * mean_deviation)
             
             current_cci = cci.iloc[-1]
             
@@ -1051,32 +1053,32 @@ class BNB_Trading_Bot:
         
         return False
 
-        def generate_signal_analysis(self, data, signal_type, signal_strength, order_status):
-            """إنشاء تحليل مفصل للإشارة"""
-            latest = data.iloc[-1]
+    def generate_signal_analysis(self, data, signal_type, signal_strength, order_status):
+        """إنشاء تحليل مفصل للإشارة"""
+        latest = data.iloc[-1]
         
-            analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()})</b>\n\n"
-            analysis += f"قوة الإشارة: {signal_strength}%\n"
-            analysis += f"السعر الحالي: ${latest['close']:.4f}\n"
-            analysis += f"الاتجاه العام: {'صاعد' if latest['close'] > latest['ema200'] else 'هبوطي'}\n"
-            analysis += f"RSI: {latest['rsi']:.1f}\n"
-            analysis += f"MACD: {latest['macd']:.6f}\n"
-            analysis += f"الحجم: {latest['vol_ratio']:.1f}x المتوسط\n"
-            analysis += f"حالة الأوامر: {order_status}\n"
+        analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()})</b>\n\n"
+        analysis += f"قوة الإشارة: {signal_strength}%\n"
+        analysis += f"السعر الحالي: ${latest['close']:.4f}\n"
+        analysis += f"الاتجاه العام: {'صاعد' if latest['close'] > latest['ema200'] else 'هبوطي'}\n"
+        analysis += f"RSI: {latest['rsi']:.1f}\n"
+        analysis += f"MACD: {latest['macd']:.6f}\n"
+        analysis += f"الحجم: {latest['vol_ratio']:.1f}x المتوسط\n"
+        analysis += f"حالة الأوامر: {order_status}\n"
         
-            # تعريف المتغير مسبقاً لتجنب الخطأ
-            required_threshold = 0
+        # تعريف المتغير مسبقاً لتجنب الخطأ
+        required_threshold = 0
         
-            if signal_type == 'buy':
-                required_threshold = self.STRICT_BUY_THRESHOLD if order_status == "FULL" else self.BASELINE_BUY_THRESHOLD
-                analysis += f"العتبة المطلوبة: {required_threshold}%\n"
-            else:
-                required_threshold = self.SELL_THRESHOLD
-                analysis += f"العتبة المطلوبة: {required_threshold}%\n"
+        if signal_type == 'buy':
+            required_threshold = self.STRICT_BUY_THRESHOLD if order_status == "FULL" else self.BASELINE_BUY_THRESHOLD
+            analysis += f"العتبة المطلوبة: {required_threshold}%\n"
+        else:
+            required_threshold = self.SELL_THRESHOLD
+            analysis += f"العتبة المطلوبة: {required_threshold}%\n"
         
-            analysis += f"القرار: {'✅ مقبولة' if signal_strength >= required_threshold else '❌ مرفوضة'}"
+        analysis += f"القرار: {'✅ مقبولة' if signal_strength >= required_threshold else '❌ مرفوضة'}"
         
-            return analysis
+        return analysis
     
     def send_performance_report(self):
         try:
