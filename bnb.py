@@ -1056,6 +1056,26 @@ class BNB_Trading_Bot:
             take_profit = entry_price - (profit_multiplier * atr_value)
     
         return stop_loss, take_profit
+
+    def get_dynamic_threshold(self, signal_type):
+        """عتبات ديناميكية حسب قوة الاتجاه العام"""
+        data = self.get_historical_data()
+        if data is None:
+            return self.BASELINE_BUY_THRESHOLD if signal_type == 'buy' else self.SELL_THRESHOLD
+    
+        latest = data.iloc[-1]
+        trend_strength = abs((latest['close'] - latest['ema34']) / latest['ema34'] * 100)
+    
+        if signal_type == 'buy':
+            if trend_strength > 5:  # اتجاه قوي
+                return self.BASELINE_BUY_THRESHOLD - 5  # تخفيف العتبة في الاتجاه القوي
+            elif trend_strength < 2:  # اتجاه ضعيف
+                return self.BASELINE_BUY_THRESHOLD + 5  # تشديد العتبة في الاتجاه الضعيف
+            else:
+                return self.BASELINE_BUY_THRESHOLD
+        else:
+            # نفس المنطق للبيع ولكن بشكل معكوس
+            return self.SELL_THRESHOLD
     
     def execute_real_trade(self, signal_type, signal_strength, current_price, stop_loss, take_profit):
         if signal_type == 'buy':
@@ -1219,7 +1239,8 @@ class BNB_Trading_Bot:
                     return 'hold', 0, 0, 0
             else:
                 # الأوامر متاحة - تطبيق العتبة الأساسية
-                if buy_strength >= self.BASELINE_BUY_THRESHOLD:
+                current_threshold = self.get_dynamic_threshold('buy') 
+                if buy_strength >= current_threshold:
                     stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
                         current_price, buy_strength, atr_value
                     )
