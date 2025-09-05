@@ -712,107 +712,215 @@ class BNB_Trading_Bot:
         return max(min(score, 100), -100)
 
     def calculate_ema_score(self, data, signal_type):
-        """حساب درجة المتوسطات المتحركة (EMA 34 كأساس)"""
+        """حساب درجة المتوسطات المتحركة بتدرج منطقي"""
         latest = data.iloc[-1]
     
-        # استخدام EMA 34 كمتوسط رئيسي
-        ema_34_bullish = latest['close'] > latest['ema34']
-        ema_34_bearish = latest['close'] < latest['ema34']
+        # حساب قوة الاتجاه بالنسبة لـ EMA 34
+        price_vs_ema = ((latest['close'] - latest['ema34']) / latest['ema34']) * 100
     
         if signal_type == 'buy':
-            if ema_34_bullish: 
-                return 20  # أعلى درجة للاتجاه الصاعد
-            elif ema_34_bearish: 
-                return -15  # عقوبة للشراء في اتجاه هبوطي
-        else:
-            if ema_34_bearish: 
-                return 20  # أعلى درجة للاتجاه الهبوطي
-            elif ema_34_bullish: 
-                return -15  # عقوبة للبيع في اتجاه صاعد
+            if price_vs_ema > 5.0:  # فوق EMA 34 بأكثر من 5%
+                return 20.0  # 100%
+            elif price_vs_ema > 2.0:  # فوق بـ 2-5%
+                return 15.0  # 75%
+            elif price_vs_ema > 0.5:  # فوق بـ 0.5-2%
+                return 10.0  # 50%
+            elif price_vs_ema > -1.0:  # قريب (-1% إلى +0.5%)
+                return 5.0   # 25%
+            elif price_vs_ema > -3.0:  # تحت بـ 1-3%
+                return -5.0  # عقوبة -25%
+            else:  # تحت بأكثر من 3%
+                return -15.0 # عقوبة قوية -75%
     
-        return 0
+        else:  # sell
+            if price_vs_ema < -5.0:  # تحت EMA 34 بأكثر من 5%
+                return 20.0  # 100%
+            elif price_vs_ema < -2.0:  # تحت بـ 2-5%
+                return 15.0  # 75%
+            elif price_vs_ema < -0.5:  # تحت بـ 0.5-2%
+                return 10.0  # 50%
+            elif price_vs_ema < 1.0:   # قريب (-0.5% إلى +1%)
+                return 5.0   # 25%
+            elif price_vs_ema < 3.0:   # فوق بـ 1-3%
+                return -5.0  # عقوبة -25%
+            else:  # فوق بأكثر من 3%
+                return -15.0 # عقوبة قوية -75%
 
     def calculate_macd_score(self, data, signal_type):
-        """حساب درجة MACD مع تحسينات"""
+        """حساب درجة MACD بتدرج منطقي"""
         latest = data.iloc[-1]
-        macd_strength = (latest['macd'] - latest['macd_sig']) / abs(latest['macd_sig']) if latest['macd_sig'] != 0 else 0
-
-        if signal_type == 'buy':  # Fixed indentation (4 spaces)
-            if macd_strength > 0.25:  # إشارة شراء قوية
-                return 20
-            elif macd_strength > 0.1:  # إشارة شراء متوسطة
-                return 10
-            elif macd_strength < -0.2:  # إشارة بيع قوية (عقوبة للشراء)
-                return -20
-        else:
-            if macd_strength < -0.25:  # إشارة بيع قوية
-                return 20
-            elif macd_strength < -0.1:  # إشارة بيع متوسطة
-                return 10
-            elif macd_strength > 0.2:  # إشارة شراء قوية (عقوبة للبيع)
-                return -20
-
-        return 0 
+    
+        # قوة الإشارة (الفرق بين MACD وخط الإشارة)
+        macd_diff = latest['macd'] - latest['macd_sig']
+    
+        # قوة الاتجاه (قيمة MACD المطلقة)
+        macd_strength = abs(latest['macd'])
+    
+        # مزيج من قوة الإشارة وقوة الاتجاه
+        combined_score = (macd_diff * 0.7) + (macd_strength * 0.3)
+    
+        if signal_type == 'buy':
+            if combined_score > 0.4:    # إشارة شراء قوية جداً
+                return 20.0  # 100%
+            elif combined_score > 0.2:  # إشارة شراء قوية
+                return 16.0  # 80%
+            elif combined_score > 0.1:  # إشارة شراء متوسطة
+                return 12.0  # 60%
+            elif combined_score > 0.05: # إشارة شراء خفيفة
+                return 8.0   # 40%
+            elif combined_score > -0.05: # محايد
+                return 0.0   # 0%
+            elif combined_score > -0.1: # إشارة بيع خفيفة
+                return -6.0  # عقوبة -30%
+            elif combined_score > -0.2: # إشارة بيع متوسطة
+                return -12.0 # عقوبة -60%
+            else:            # إشارة بيع قوية
+                return -18.0 # عقوبة -90%
+    
+        else:  # sell
+            if combined_score < -0.4:   # إشارة بيع قوية جداً
+                return 20.0  # 100%
+            elif combined_score < -0.2: # إشارة بيع قوية
+                return 16.0  # 80%
+            elif combined_score < -0.1: # إشارة بيع متوسطة
+                return 12.0  # 60%
+            elif combined_score < -0.05: # إشارة بيع خفيفة
+                return 8.0   # 40%
+            elif combined_score < 0.05:  # محايد
+                return 0.0   # 0%
+            elif combined_score < 0.1:   # إشارة شراء خفيفة
+                return -6.0  # عقوبة -30%
+            elif combined_score < 0.2:   # إشارة شراء متوسطة
+                return -12.0 # عقوبة -60%
+            else:            # إشارة شراء قوية
+                return -18.0 # عقوبة -90%
 
     def calculate_rsi_score(self, data, signal_type):
-        """حساب درجة RSI مع تحسينات"""
+        """حساب درجة RSI بتدرج منطقي"""
         latest = data.iloc[-1]
-
-        if signal_type == 'buy':  # Fixed indentation (4 spaces)
-            if latest['rsi'] < 30:  # ذروة بيع
-                return 15
-            elif latest['rsi'] < 40:  # منطقة بيع
-                return 8
-            elif latest['rsi'] > 70:  # ذروة شراء (عقوبة)
-                return -15
-        else:
-            if latest['rsi'] > 70:  # ذروة شراء
-                return 15
-            elif latest['rsi'] > 60:  # منطقة شراء
-                return 8
-            elif latest['rsi'] < 30:  # ذروة بيع (عقوبة)
-                return -15
-
-        return 0   
+        rsi = latest['rsi']
+    
+        if signal_type == 'buy':
+            if rsi < 25:    # ذروة بيع شديدة
+                return 15.0  # 100%
+            elif rsi < 30:   # ذروة بيع
+                return 12.0  # 80%
+            elif rsi < 35:   # منطقة بيع
+                return 8.0   # 53%
+            elif rsi < 45:   # محايد مائل للبيع
+                return 4.0   # 27%
+            elif rsi < 55:   # محايد تماماً
+                return 0.0   # 0%
+            elif rsi < 65:   # محايد مائل للشراء
+                return -4.0  # عقوبة -27%
+            elif rsi < 70:   # منطقة شراء
+                return -8.0  # عقوبة -53%
+            else:            # ذروة شراء
+                return -15.0 # عقوبة -100%
+    
+        else:  # sell
+            if rsi > 75:    # ذروة شراء شديدة
+                return 15.0  # 100%
+            elif rsi > 70:   # ذروة شراء
+                return 12.0  # 80%
+            elif rsi > 65:   # منطقة شراء
+                return 8.0   # 53%
+            elif rsi > 55:   # محايد مائل للشراء
+                return 4.0   # 27%
+            elif rsi > 45:   # محايد تماماً
+                return 0.0   # 0%
+            elif rsi > 35:   # محايد مائل للبيع
+                return -4.0  # عقوبة -27%
+            elif rsi > 30:   # منطقة بيع
+                return -8.0  # عقوبة -53%
+            else:            # ذروة بيع
+                return -15.0 # عقوبة -100%
 
     def calculate_bollinger_bands_score(self, data, signal_type):
-        """حساب درجة بولينجر باند مع تحسينات"""
+        """حساب درجة بولينجر باند بتدرج منطقي"""
         latest = data.iloc[-1]
-        bb_position = (latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower'])
-
-        if signal_type == 'buy':
-            if bb_position < 0.1:  # قرب النطاق السفلي (فرصة شراء)
-                return 20
-            elif bb_position < 0.3:  # منطقة شراء جيدة
-                return 10
-            elif bb_position > 0.9:  # قرب النطاق العلوي (عقوبة)
-                return -20
-        else:
-            if bb_position > 0.9:  # قرب النطاق العلوي (فرصة بيع)
-                return 20
-            elif bb_position > 0.7:  # منطقة بيع جيدة
-                return 10
-            elif bb_position < 0.1:  # قرب النطاق السفلي (عقوبة)
-                return -20
     
-        return 0
+        # حساب الموقع النسبي بين النطاقات
+        bb_position = (latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower'])
+    
+        # عرض النطاق (مؤشر للتقلب)
+        bb_width = (latest['bb_upper'] - latest['bb_lower']) / latest['bb_middle']
+    
+        if signal_type == 'buy':
+            if bb_position < 0.05:      # قرب النطاق السفلي جداً
+                return 20.0  # 100%
+            elif bb_position < 0.15:    # قرب النطاق السفلي
+                return 16.0  # 80%
+            elif bb_position < 0.25:    # في الثلث السفلي
+                return 12.0  # 60%
+            elif bb_position < 0.4:     # في النصف السفلي
+                return 8.0   # 40%
+            elif bb_position < 0.6:     # في المنتصف
+                return 4.0   # 20%
+            elif bb_position < 0.75:    # في النصف العلوي
+                return -4.0  # عقوبة -20%
+            elif bb_position < 0.85:    # في الثلث العلوي
+                return -8.0  # عقوبة -40%
+            elif bb_position < 0.95:    # قرب النطاق العلوي
+                return -12.0 # عقوبة -60%
+            else:            # عند أو فوق النطاق العلوي
+                return -16.0 # عقوبة -80%
+    
+        else:  # sell
+            if bb_position > 0.95:      # قرب النطاق العلوي جداً
+                return 20.0  # 100%
+            elif bb_position > 0.85:    # قرب النطاق العلوي
+                return 16.0  # 80%
+            elif bb_position > 0.75:    # في الثلث العلوي
+                return 12.0  # 60%
+            elif bb_position > 0.6:     # في النصف العلوي
+                return 8.0   # 40%
+            elif bb_position > 0.4:     # في المنتصف
+                return 4.0   # 20%
+            elif bb_position > 0.25:    # في النصف السفلي
+                return -4.0  # عقوبة -20%
+            elif bb_position > 0.15:    # في الثلث السفلي
+                return -8.0  # عقوبة -40%
+            elif bb_position > 0.05:    # قرب النطاق السفلي
+                return -12.0 # عقوبة -60%
+            else:            # عند أو تحت النطاق السفلي
+                return -16.0 # عقوبة -80%
 
     def calculate_volume_score(self, data, signal_type):
-        """حساب درجة الحجم كعنصر رئيسي"""
+        """حساب درجة الحجم بتدرج دقيق"""
         latest = data.iloc[-1]
         volume_ratio = latest['vol_ratio']
     
-        # التأكد من وجود حركة سعرية في اتجاه الإشارة
-        price_confirmation = (latest['close'] > latest['open']) if signal_type == 'buy' else (latest['close'] < latest['open'])
+        # اتجاه الحركة السعرية
+        price_move = latest['close'] - latest['open']
+        price_direction = 1 if price_move > 0 else -1 if price_move < 0 else 0
     
-        if volume_ratio > 2.0 and price_confirmation:
-            return 20  # حجم عالي مع تأكيد السعر
-        elif volume_ratio > 1.5 and price_confirmation:
-            return 10  # حجم جيد مع تأكيد السعر
-        elif volume_ratio > 2.0 and not price_confirmation:
-            return -15  # حجم عالي بدون تأكيد السعر (تحذير)
+        # التوافق بين الحجم والاتجاه
+        direction_match = (price_direction == 1 and signal_type == 'buy') or \
+                         (price_direction == -1 and signal_type == 'sell')
     
-        return 0
+        if volume_ratio > 3.5:          # حجم استثنائي
+            score = 18.0 + (2.0 if direction_match else -4.0)
+        elif volume_ratio > 2.5:        # حجم عالي جداً
+            score = 15.0 + (2.0 if direction_match else -3.0)
+        elif volume_ratio > 2.0:        # حجم عالي
+            score = 12.0 + (2.0 if direction_match else -2.0)
+        elif volume_ratio > 1.5:        # حجم فوق المتوسط
+            score = 9.0 + (1.0 if direction_match else -1.0)
+        elif volume_ratio > 1.2:        # حجم جيد
+            score = 6.0 + (1.0 if direction_match else -1.0)
+        elif volume_ratio > 0.9:        # حجم طبيعي
+            score = 3.0
+        elif volume_ratio > 0.7:        # حجم منخفض
+            score = 0.0
+        elif volume_ratio > 0.5:        # حجم منخفض جداً
+            score = -4.0
+        elif volume_ratio > 0.3:        # حجم ضعيف
+            score = -8.0
+        else:                           # حجم شبه معدوم
+            score = -12.0
+    
+        return max(min(score, 20.0), -20.0)
 
     def calculate_time_weight_score(self, signal_type):
         """حساب درجة الوزن الزمني"""
@@ -835,30 +943,46 @@ class BNB_Trading_Bot:
         return time_score
 
     def calculate_market_trend_score(self, data, signal_type):
-        """حساب درجة اتجاه السوق (الجديدة)"""
+        """حساب درجة اتجاه السوق بتدرج منطقي"""
         latest = data.iloc[-1]
-        
-        # اتجاه طويل الأجل (EMA 200)
-        price_vs_ema200 = (latest['close'] - latest['ema200']) / latest['ema200'] * 100
-        
+    
+        # اتجاه طويل الأجل (EMA 200) + اتجاه متوسط (EMA 34)
+        price_vs_ema200 = ((latest['close'] - latest['ema200']) / latest['ema200']) * 100
+        price_vs_ema34 = ((latest['close'] - latest['ema34']) / latest['ema34']) * 100
+    
+        trend_strength = (price_vs_ema200 * 0.4) + (price_vs_ema34 * 0.6)  # وزن أكبر لـ EMA 34
+    
         if signal_type == 'buy':
-            # تجنب الشراء في اتجاه هبوطي قوي
-            if price_vs_ema200 < -5:  # السعر تحت EMA200 بأكثر من 5%
-                return -15  # عقوبة كبيرة للشراء في اتجاه هبوطي
-            elif price_vs_ema200 < -2:  # السعر تحت EMA200 بـ 2-5%
-                return -8
-            elif price_vs_ema200 > 5:  # السعر فوق EMA200 بأكثر من 5%
-                return +10  # مكافأة للشراء في اتجاه صاعد
-        else:
-            # مكافأة البيع في اتجاه هبوطي
-            if price_vs_ema200 < -5:
-                return +12
-            elif price_vs_ema200 < -2:
-                return +6
-            elif price_vs_ema200 > 5:
-                return -8  # عقوبة للبيع في اتجاه صاعد قوي
-        
-        return 0
+            if trend_strength > 8.0:    # اتجاه صعودي قوي جداً
+                return 25.0  # 100%
+            elif trend_strength > 4.0:  # اتجاه صعودي قوي
+                return 20.0  # 80%
+            elif trend_strength > 1.5:  # اتجاه صعودي معتدل
+                return 15.0  # 60%
+            elif trend_strength > -1.0: # اتجاه محايد
+                return 8.0   # 32%
+            elif trend_strength > -3.0: # اتجاه هبوطي طفيف
+                return 2.0   # 8%
+            elif trend_strength > -6.0: # اتجاه هبوطي
+                return -10.0 # عقوبة -40%
+            else:            # اتجاه هبوطي قوي
+                return -20.0 # عقوبة -80%
+    
+        else:  # sell
+            if trend_strength < -8.0:   # اتجاه هبوطي قوي جداً
+                return 25.0  # 100%
+            elif trend_strength < -4.0: # اتجاه هبوطي قوي
+                return 20.0  # 80%
+            elif trend_strength < -1.5: # اتجاه هبوطي معتدل
+                return 15.0  # 60%
+            elif trend_strength < 1.0:  # اتجاه محايد
+                return 8.0   # 32%
+            elif trend_strength < 3.0:  # اتجاه صعودي طفيف
+                return 2.0   # 8%
+            elif trend_strength < 6.0:  # اتجاه صعودي
+                return -10.0 # عقوبة -40%
+            else:            # اتجاه صعودي قوي
+                return -20.0 # عقوبة -80%
     
     def calculate_cci_momentum(self, data, signal_type, period=20):
         """حساب مؤشر CCI للزخم (الجديد)"""
