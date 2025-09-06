@@ -1352,7 +1352,7 @@ class BNB_Trading_Bot:
 
         analysis += f"القرار: {'✅ مقبولة' if abs(signal_strength) >= required_threshold else '❌ مرفوضة'}"
 
-        return analysiss
+        return analysis
     
     def send_performance_report(self):
         try:
