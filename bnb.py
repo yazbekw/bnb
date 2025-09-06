@@ -145,6 +145,9 @@ class BNB_Trading_Bot:
         self.BASELINE_BUY_THRESHOLD = 45  # رفع من 25 إلى 35
         self.STRICT_BUY_THRESHOLD = 55    # رفع من 20 إلى 45 (للأوامر الممتلئة)
         self.SELL_THRESHOLD = 40        # عتبة البيع تبقى كما هي
+
+        self.last_buy_contributions = {}
+        self.last_sell_contributions = {}
         
         self.api_key = api_key or os.environ.get('BINANCE_API_KEY')
         self.api_secret = api_secret or os.environ.get('BINANCE_API_SECRET')
