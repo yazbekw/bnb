@@ -1202,23 +1202,32 @@ class BNB_Trading_Bot:
             # نفس المنطق للبيع ولكن بشكل معكوس
             return self.SELL_THRESHOLD
     
-    def execute_real_trade(self, signal_type, signal_strength, current_price, stop_loss, take_profit):
+   def execute_real_trade(self, signal_type, signal_strength, current_price, stop_loss, take_profit):
+        # التحقق من مساحة الأوامر للصفقات الشراء فقط
         if signal_type == 'buy':
-            if not self.manage_order_space(self.symbol):
-                self.send_notification("❌ تم إلغاء الصفقة - لا يمكن وضع أوامر الوقف")
-                return False
+            order_status = self.get_order_space_status(self.symbol)
         
+            if order_status == "FULL":
+                # إذا كانت الأوامر ممتلئة، نتحقق إذا كانت قوة الإشارة تصل للعتبة المشددة
+                if signal_strength < self.STRICT_BUY_THRESHOLD:
+                    self.send_notification("❌ تم إلغاء الصفقة - الأوامر ممتلئة والإشارة ضعيفة للعتبة المشددة")
+                    return False
+                else:
+                    self.send_notification("⚠️ تحذير: الأوامر ممتلئة ولكن الإشارة قوية enough للعتبة المشددة")
+            elif order_status == "NEAR_FULL":
+                self.send_notification("⚠️ تحذير: مساحة الأوامر قريبة من الامتلاء")
+    
         try:
             trade_size = self.calculate_dollar_size(signal_strength, signal_type)
-        
+    
             if trade_size <= 0:
                 return False
-        
+    
             logger.info(f"بدء تنفيذ صفقة {signal_type} بقوة {signal_strength}% بحجم {trade_size}$")
-        
+    
             if signal_type == 'buy':
                 can_trade, usdt_balance = self.check_balance_before_trade(trade_size)
-                        
+                    
                 if not can_trade:
                     available_balance = usdt_balance * 0.95
                     if available_balance >= 5:
@@ -1227,23 +1236,23 @@ class BNB_Trading_Bot:
                     else:
                         self.send_notification(f"❌ رصيد غير كافي حتى لأصغر صفقة. المطلوب: $5، المتاح: ${usdt_balance:.2f}")
                         return False
-            
+        
                 quantity = trade_size / current_price
-            
+        
                 info = self.client.get_symbol_info(self.symbol)
                 step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
                 precision = len(str(step_size).split('.')[1].rstrip('0'))
                 quantity = round(quantity - (quantity % step_size), precision)
-            
+        
                 if quantity <= 0:
                     self.send_notification("⚠️ الكمية غير صالحة للشراء")
                     return False
-            
+        
                 order = self.client.order_market_buy(
                     symbol=self.symbol,
                     quantity=quantity
                 )
-            
+        
                 self.add_trade_record(
                     trade_type="buy",
                     quantity=quantity,
@@ -1252,17 +1261,12 @@ class BNB_Trading_Bot:
                     signal_strength=signal_strength,
                     order_id=order.get('orderId', 'N/A')
                 )
-            
-                # التحقق من مساحة الأوامر مرة أخرى قبل وضع أوامر الوقف
-                order_status = self.get_order_space_status(self.symbol)
-                if order_status == "FULL":
-                    self.send_notification("⚠️ لا يمكن وضع أوامر الوقف - المساحة ممتلئة")
-                    return True
-            
+        
+                # محاولة وضع أوامر الوقف حتى لو كانت الأوامر ممتلئة (لأنها صفقة قوية)
                 try:
                     formatted_stop_loss = self.format_price(stop_loss, self.symbol)
                     formatted_take_profit = self.format_price(take_profit, self.symbol)
-                
+            
                     oco_order = self.client.order_oco_sell(
                         symbol=self.symbol,
                         quantity=quantity,
@@ -1272,29 +1276,29 @@ class BNB_Trading_Bot:
                         stopLimitTimeInForce='GTC'
                     )
                     logger.info(f"✅ تم وضع أوامر الوقف: SL={formatted_stop_loss}, TP={formatted_take_profit}")
-                
+            
                 except Exception as e:
                     error_msg = f"⚠️ فشل وضع أوامر الوقف: {e}"
                     self.send_notification(error_msg)
                     logger.error(error_msg)
-            
+        
                 return True
-            
+        
             elif signal_type == 'sell':
                 total_balance, balances, _ = self.get_account_balance_details()
                 bnb_balance = balances.get('BNB', {}).get('free', 0)
-            
+        
                 if bnb_balance <= 0.001:
                     self.send_notification("⚠️ رصيد BNB غير كافي للبيع")
                     return False
-            
+        
                 quantity_by_trade_size = trade_size / current_price
-            
+        
                 if quantity_by_trade_size > bnb_balance:
                     available_balance = bnb_balance * 0.95
                     quantity_to_sell = available_balance
                     actual_trade_size = quantity_to_sell * current_price
-                
+            
                     if actual_trade_size >= 5:
                         trade_size = actual_trade_size
                         self.send_notification(f"⚠️ تعديل حجم صفقة البيع. أصبح: ${trade_size:.2f} (الرصيد المتاح: {bnb_balance:.6f} BNB)")
@@ -1303,21 +1307,21 @@ class BNB_Trading_Bot:
                         return False
                 else:
                     quantity_to_sell = quantity_by_trade_size
-            
+        
                 info = self.client.get_symbol_info(self.symbol)
                 step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
                 precision = len(str(step_size).split('.')[1].rstrip('0'))
                 quantity = round(quantity_to_sell - (quantity_to_sell % step_size), precision)
-            
+        
                 if quantity <= 0:
                     self.send_notification("⚠️ الكمية غير صالحة للبيع")
                     return False
-            
+        
                 order = self.client.order_market_sell(
                     symbol=self.symbol,
                     quantity=quantity
                 )
-            
+        
                 self.add_trade_record(
                     trade_type="sell",
                     quantity=quantity,
@@ -1326,54 +1330,50 @@ class BNB_Trading_Bot:
                     signal_strength=signal_strength,
                     order_id=order.get('orderId', 'N/A')
                  )
-            
+        
                 return True
-            
+        
         except Exception as e:
             error_msg = f"❌ خطأ في تنفيذ الصفقة: {e}"
             self.send_notification(error_msg)
             logger.error(error_msg)
             return False
     
+    
     def bnb_strategy(self, data):
         """استراتيجية التداول - الإصدار المحسن"""
         if data is None or len(data) < 100:
             return 'hold', 0, 0, 0
-        
+    
         latest = data.iloc[-1]
         current_price = latest['close']
         atr_value = latest['atr']
-        
+    
         buy_strength = self.calculate_signal_strength(data, 'buy')
         sell_strength = self.calculate_signal_strength(data, 'sell')
-        
+    
         # الحصول على حالة مساحة الأوامر
         order_space_status = self.get_order_space_status(self.symbol)
-        
+    
         # تطبيق العتبات المختلفة حسب حالة الأوامر
         if buy_strength > 0 and buy_strength > sell_strength:
+            # تحديد العتبة المناسبة حسب حالة الأوامر
             if order_space_status == "FULL":
                 # الأوامر ممتلئة - تطبيق العتبة المشددة
-                if buy_strength >= self.STRICT_BUY_THRESHOLD:
-                    stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
-                        current_price, buy_strength, atr_value
-                    )
-                    return 'buy', buy_strength, stop_loss, take_profit
-                else:
-                    logger.info(f"📊 إشارة شراء قوتها {buy_strength}% تم تجاهلها (العتبة المشددة: {self.STRICT_BUY_THRESHOLD}%)")
-                    return 'hold', 0, 0, 0
+                required_threshold = self.STRICT_BUY_THRESHOLD
             else:
                 # الأوامر متاحة - تطبيق العتبة الأساسية
-                current_threshold = self.get_dynamic_threshold('buy') 
-                if buy_strength >= current_threshold:
-                    stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
-                        current_price, buy_strength, atr_value
-                    )
-                    return 'buy', buy_strength, stop_loss, take_profit
-                else:
-                    logger.info(f"📊 إشارة شراء قوتها {buy_strength}% تم تجاهلها (العتبة الأساسية: {self.BASELINE_BUY_THRESHOLD}%)")
-                    return 'hold', 0, 0, 0
-                    
+                required_threshold = self.BASELINE_BUY_THRESHOLD
+        
+            if buy_strength >= required_threshold:
+                stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
+                    current_price, buy_strength, atr_value
+                )
+                return 'buy', buy_strength, stop_loss, take_profit
+            else:
+                logger.info(f"📊 إشارة شراء قوتها {buy_strength}% تم تجاهلها (العتبة المطلوبة: {required_threshold}%)")
+                return 'hold', 0, 0, 0
+            
         elif sell_strength > 0 and sell_strength > buy_strength:
             # البيع لا يتأثر بمساحة الأوامر (عتبة ثابتة)
             if sell_strength >= self.SELL_THRESHOLD:
@@ -1384,10 +1384,10 @@ class BNB_Trading_Bot:
             else:
                 logger.info(f"📊 إشارة بيع قوتها {sell_strength}% تم تجاهلها (عتبة البيع: {self.SELL_THRESHOLD}%)")
                 return 'hold', 0, 0, 0
-        
+    
         else:
             return 'hold', 0, 0, 0
-    
+            
     def check_balance_before_trade(self, required_usdt):
         """التحقق من الرصيد قبل التنفيذ"""
         try:
@@ -1450,7 +1450,7 @@ class BNB_Trading_Bot:
 
         if hasattr(self, 'last_indicator_contributions'):
             contributions = self.last_indicator_contributions
-    
+
             # تحويل أسماء المؤشرات للعربية مع الأوزان
             indicator_names = {
                 'market_trend': 'اتجاه السوق (25%)',
@@ -1460,13 +1460,12 @@ class BNB_Trading_Bot:
                 'bollinger_bands': 'بولينجر باند (20%)',
                 'volume': 'الحجم (20%)'
             }
-    
+
             for indicator, value in contributions.items():
                 arabic_name = indicator_names.get(indicator, indicator)
                 emoji = "🟢" if value > 0 else "🔴" if value < 0 else "⚪"
                 analysis += f"{emoji} {arabic_name}: {value:+.1f}\n"
 
-    
         analysis += f"\n📊 <b>التفاصيل الفنية:</b>\n"
         analysis += f"EMA 34: ${latest['ema34']:.4f}\n"
         analysis += f"السعر/EMA 34: {((latest['close'] - latest['ema34']) / latest['ema34'] * 100):+.2f}%\n"
@@ -1475,19 +1474,20 @@ class BNB_Trading_Bot:
         analysis += f"الحجم: {latest['vol_ratio']:.1f}x المتوسط\n"
         analysis += f"بولينجر: {((latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower']) * 100):.1f}%\n"
         analysis += f"حالة الأوامر: {order_status}\n"
-    
-        # تعريف المتغير مسبقاً لتجنب الخطأ
-        required_threshold = 0
-    
+
+        # تحديد العتبة المطلوبة حسب حالة الأوامر
         if signal_type == 'buy':
-            required_threshold = self.STRICT_BUY_THRESHOLD if order_status == "FULL" else self.BASELINE_BUY_THRESHOLD
-            analysis += f"العتبة المطلوبة: {required_threshold}%\n"
+            if order_status == "FULL":         required_threshold = self.STRICT_BUY_THRESHOLD
+                analysis += f"العتبة المطلوبة: {required_threshold}% (مشددة - الأوامر ممتلئة)\n"
+            else:
+                required_threshold = self.BASELINE_BUY_THRESHOLD
+                analysis += f"العتبة المطلوبة: {required_threshold}% (أساسية)\n"
         else:
             required_threshold = self.SELL_THRESHOLD
             analysis += f"العتبة المطلوبة: {required_threshold}%\n"
-    
+
         analysis += f"القرار: {'✅ مقبولة' if abs(signal_strength) >= required_threshold else '❌ مرفوضة'}"
-    
+
         return analysis
     
     def check_time_alerts(self):
