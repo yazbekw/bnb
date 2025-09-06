@@ -537,45 +537,48 @@ class BNB_Trading_Bot:
             return False
     
     def calculate_signal_strength(self, data, signal_type='buy'):
-        """تقييم قوة الإشارة من -100 إلى +100% مع الأوزان الجديدة"""
+        """تقييم قوة الإشارة من -100 إلى +100% مع حسابات منفصلة للشراء والبيع"""
         latest = data.iloc[-1]
         score = 0
 
-        # تسجيل مساهمة كل مؤشر
+        # تسجيل مساهمة كل مؤشر بشكل منفصل
         indicator_contributions = {}
 
-        # 1. اتجاه السوق (25%) - المؤشر الرئيسي
+        # 1. اتجاه السوق (25%)
         market_trend_score = self.calculate_market_trend_score(data, signal_type)
         score += market_trend_score
         indicator_contributions['market_trend'] = market_trend_score
 
-        # 2. المتوسطات المتحركة (20%) - EMA 34 بدلاً من المتعددة
+        # 2. المتوسطات المتحركة (20%)
         ema_score = self.calculate_ema_score(data, signal_type)
         score += ema_score
         indicator_contributions['moving_averages'] = ema_score
 
-        # 3. MACD (20%) - زيادة الوزن
+        # 3. MACD (20%)
         macd_score = self.calculate_macd_score(data, signal_type)
         score += macd_score
         indicator_contributions['macd'] = macd_score
 
-        # 4. RSI (15%) - تقليل الوزن قليلاً
+        # 4. RSI (15%)
         rsi_score = self.calculate_rsi_score(data, signal_type)
         score += rsi_score
         indicator_contributions['rsi'] = rsi_score
 
-        # 5. بولينجر باند (20%) - زيادة الوزن
+        # 5. بولينجر باند (20%)
         bb_score = self.calculate_bollinger_bands_score(data, signal_type)
         score += bb_score
         indicator_contributions['bollinger_bands'] = bb_score
 
-        # 6. الحجم (20%) - إضافة مؤشر الحجم كعنصر رئيسي
+        # 6. الحجم (20%)
         volume_score = self.calculate_volume_score(data, signal_type)
         score += volume_score
         indicator_contributions['volume'] = volume_score
 
-        # تخزين مساهمات المؤشرات للاستخدام لاحقاً
-        self.last_indicator_contributions = indicator_contributions
+        # تخزين مساهمات المؤشرات حسب نوع الإشارة
+        if signal_type == 'buy':
+            self.last_buy_contributions = indicator_contributions
+        else:
+            self.last_sell_contributions = indicator_contributions
 
         return max(min(score, 100), -100)
 
@@ -1297,33 +1300,36 @@ class BNB_Trading_Bot:
         """إنشاء تحليل مفصل للإشارة مع نسبة مساهمة كل مؤشر"""
         latest = data.iloc[-1]
 
-        analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()}) - النظام الجديد</b>\n\n"
+        analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()}) - النظام المعدل</b>\n\n"
         analysis += f"قوة الإشارة: {signal_strength}%\n"
         analysis += f"السعر الحالي: ${latest['close']:.4f}\n"
         analysis += f"الاتجاه العام (EMA 34): {'صاعد' if latest['close'] > latest['ema34'] else 'هبوطي'}\n\n"
 
-        # إضافة مساهمة كل مؤشر مع الأوزان الجديدة
-        analysis += "📈 <b>مساهمة المؤشرات (الأوزان الجديدة):</b>\n"
+        # استخدام المساهمات الصحيحة حسب نوع الإشارة
+        if signal_type == 'buy' and hasattr(self, 'last_buy_contributions'):
+            contributions = self.last_buy_contributions
+        elif signal_type == 'sell' and hasattr(self, 'last_sell_contributions'):
+            contributions = self.last_sell_contributions
+        else:
+            contributions = {}
 
-        if hasattr(self, 'last_indicator_contributions'):
-            contributions = self.last_indicator_contributions
-    
-            # تحويل أسماء المؤشرات للعربية مع الأوزان
-            indicator_names = {
-                'market_trend': 'اتجاه السوق (25%)',
-                'moving_averages': 'المتوسطات المتحركة (20%)',
-                'macd': 'مؤشر MACD (20%)',
-                'rsi': 'مؤشر RSI (15%)',
-                'bollinger_bands': 'بولينجر باند (20%)',
-                'volume': 'الحجم (20%)'
-            }
-    
-            for indicator, value in contributions.items():
-                arabic_name = indicator_names.get(indicator, indicator)
-                emoji = "🟢" if value > 0 else "🔴" if value < 0 else "⚪"
-                analysis += f"{emoji} {arabic_name}: {value:+.1f}\n"
+        analysis += "📈 <b>مساهمة المؤشرات:</b>\n"
 
-    
+        # تحويل أسماء المؤشرات للعربية مع الأوزان
+        indicator_names = {
+            'market_trend': 'اتجاه السوق (25%)',
+            'moving_averages': 'المتوسطات المتحركة (20%)',
+            'macd': 'مؤشر MACD (20%)',
+            'rsi': 'مؤشر RSI (15%)',
+            'bollinger_bands': 'بولينجر باند (20%)',
+            'volume': 'الحجم (20%)'
+        }
+
+        for indicator, value in contributions.items():
+            arabic_name = indicator_names.get(indicator, indicator)
+            emoji = "🟢" if value > 0 else "🔴" if value < 0 else "⚪"
+            analysis += f"{emoji} {arabic_name}: {value:+.1f}\n"
+
         analysis += f"\n📊 <b>التفاصيل الفنية:</b>\n"
         analysis += f"EMA 34: ${latest['ema34']:.4f}\n"
         analysis += f"السعر/EMA 34: {((latest['close'] - latest['ema34']) / latest['ema34'] * 100):+.2f}%\n"
@@ -1332,10 +1338,8 @@ class BNB_Trading_Bot:
         analysis += f"الحجم: {latest['vol_ratio']:.1f}x المتوسط\n"
         analysis += f"بولينجر: {((latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower']) * 100):.1f}%\n"
         analysis += f"حالة الأوامر: {order_status}\n"
-    
-        # تعريف المتغير مسبقاً لتجنب الخطأ
+
         required_threshold = 0
-    
         if signal_type == 'buy':
             if order_status == "FULL":
                 required_threshold = self.STRICT_BUY_THRESHOLD
@@ -1345,10 +1349,10 @@ class BNB_Trading_Bot:
         else:
             required_threshold = self.SELL_THRESHOLD
             analysis += f"العتبة المطلوبة: {required_threshold}%\n"
-    
+
         analysis += f"القرار: {'✅ مقبولة' if abs(signal_strength) >= required_threshold else '❌ مرفوضة'}"
-    
-        return analysis
+
+        return analysiss
     
     def send_performance_report(self):
         try:
