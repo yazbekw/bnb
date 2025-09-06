@@ -46,19 +46,6 @@ def daily_report():
     except Exception as e:
         return {'error': str(e)}
 
-@app.route('/time_schedule')
-def time_schedule():
-    try:
-        bot = BNB_Trading_Bot()
-        schedule = bot.get_daily_optimal_schedule()
-        return {
-            'today': datetime.now().strftime('%Y-%m-%d'),
-            'optimal_windows': schedule,
-            'total_windows': len(schedule)
-        }
-    except Exception as e:
-        return {'error': str(e)}
-
 def run_flask_app():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
@@ -73,148 +60,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-class TimeWeightManager:
-    def __init__(self, weights_file='bnb_time_weights_advanced.csv'):
-        # تحميل أوزان التوقيت من الملف
-        self.weights_df = pd.read_csv(weights_file, index_col=0, encoding='utf-8-sig')
-        self.weekdays_arabic = ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد']
-        self.weekdays_english = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        
-        # تحويل الأعمدة الزمنية إلى تنسيق مناسب
-        self.time_slots = self.weights_df.columns.tolist()
-        
-        # إنشاء قاموس للتحويل بين الأيام العربية والإنجليزية
-        self.weekday_map = {eng: arb for eng, arb in zip(self.weekdays_english, self.weekdays_arabic)}
-        
-        # قائمة نوافذ التداول المثلى (سيتم ملؤها تلقائياً)
-        self.optimal_windows = self._load_optimal_windows()
-        
-        # تتبع النوافذ التي تم إرسال إنذار لها
-        self.notified_windows = set()
-    
-    def _load_optimal_windows(self, min_strength=7):
-        """تحميل نوافذ التداول المثلى من ملف الأوزان"""
-        optimal_windows = []
-        
-        for weekday_arabic in self.weekdays_arabic:
-            for time_slot in self.time_slots:
-                weight = self.weights_df.loc[weekday_arabic, time_slot]
-                if abs(weight) >= min_strength:
-                    hour, minute = map(int, time_slot.split(':'))
-                    optimal_windows.append({
-                        'weekday_arabic': weekday_arabic,
-                        'weekday_english': self._get_english_weekday(weekday_arabic),
-                        'time': time_slot,
-                        'hour': hour,
-                        'minute': minute,
-                        'weight': weight,
-                        'signal': 'BUY' if weight > 0 else 'SELL',
-                        'strength': abs(weight)
-                    })
-        
-        return optimal_windows
-    
-    def _get_english_weekday(self, arabic_weekday):
-        """تحويل اليوم من العربية إلى الإنجليزية"""
-        for eng, arb in self.weekday_map.items():
-            if arb == arabic_weekday:
-                return eng
-        return arabic_weekday
-    
-    def get_current_time_weight(self):
-        """الحصول على وزن الوقت الحالي"""
-        now = datetime.now()
-        current_weekday_english = now.strftime('%A')
-        current_weekday_arabic = self.weekday_map.get(current_weekday_english, current_weekday_english)
-        
-        current_time = now.strftime('%H:%M')
-        current_hour = now.hour
-        current_minute = now.minute
-        
-        # البحث عن الوزن المناسب للوقت الحالي
-        try:
-            weight = self.weights_df.loc[current_weekday_arabic, current_time]
-            return {
-                'weight': weight,
-                'signal': 'BUY' if weight > 0 else 'SELL',
-                'strength': abs(weight),
-                'time': f"{current_weekday_arabic} {current_time}",
-                'hour': current_hour,
-                'minute': current_minute
-            }
-        except KeyError:
-            return None
-    
-    def get_upcoming_optimal_windows(self, lookahead_minutes=30):
-        """الحصول على النوافذ المثلى القادمة في الدقائق التالية"""
-        now = datetime.now()
-        current_weekday_english = now.strftime('%A')
-        current_time = now.strftime('%H:%M')
-        
-        upcoming_windows = []
-        
-        for window in self.optimal_windows:
-            if window['weekday_english'] != current_weekday_english:
-                continue
-            
-            # حساب الوقت المتبقي للنافذة
-            window_time = datetime.now().replace(hour=window['hour'], minute=window['minute'], second=0, microsecond=0)
-            time_diff = (window_time - now).total_seconds() / 60  # الفرق بالدقائق
-            
-            if 0 <= time_diff <= lookahead_minutes:
-                upcoming_windows.append({
-                    **window,
-                    'minutes_away': time_diff,
-                    'window_time': window_time
-                })
-        
-        return sorted(upcoming_windows, key=lambda x: x['minutes_away'])
-    
-    def check_alert_windows(self, alert_minutes=5):
-        """التحقق من النوافذ التي تحتاج إلى إنذار مسبق"""
-        now = datetime.now()
-        upcoming_windows = self.get_upcoming_optimal_windows(alert_minutes + 2)
-        
-        alerts = []
-        
-        for window in upcoming_windows:
-            window_id = f"{window['weekday_english']}_{window['time']}"
-            
-            # التحقق إذا لم يتم إرسال إنذار لهذه النافذة بعد
-            if window_id not in self.notified_windows and window['minutes_away'] <= alert_minutes:
-                alerts.append(window)
-                self.notified_windows.add(window_id)
-        
-        return alerts
-
-class TelegramNotifier:
-    def __init__(self, token, chat_id):
-        self.token = token
-        self.chat_id = chat_id
-        self.base_url = f"https://api.telegram.org/bot{token}"
-    
-    def send_message(self, message):
-        try:
-            logger.info(f"محاولة إرسال رسالة إلى Telegram: {message}")
-            url = f"{self.base_url}/sendMessage"
-            payload = {
-                'chat_id': self.chat_id,
-                'text': message,
-                'parse_mode': 'HTML'
-            }
-            response = requests.post(url, data=payload, timeout=10)
-            if response.status_code != 200:
-                error_msg = f"فشل إرسال رسالة Telegram: {response.text}"
-                logger.error(error_msg)
-                return False
-            else:
-                logger.info("تم إرسال الرسالة إلى Telegram بنجاح")
-                return True
-        except Exception as e:
-            error_msg = f"خطأ في إرسال رسالة Telegram: {e}"
-            logger.error(error_msg)
-            return False
 
 class PerformanceAnalyzer:
     def __init__(self):
@@ -261,6 +106,34 @@ class PerformanceAnalyzer:
         self.daily_start_balance = new_start_balance
         self.daily_start_time = datetime.now()
 
+class TelegramNotifier:
+    def __init__(self, token, chat_id):
+        self.token = token
+        self.chat_id = chat_id
+        self.base_url = f"https://api.telegram.org/bot{token}"
+    
+    def send_message(self, message):
+        try:
+            logger.info(f"محاولة إرسال رسالة إلى Telegram: {message}")
+            url = f"{self.base_url}/sendMessage"
+            payload = {
+                'chat_id': self.chat_id,
+                'text': message,
+                'parse_mode': 'HTML'
+            }
+            response = requests.post(url, data=payload, timeout=10)
+            if response.status_code != 200:
+                error_msg = f"فشل إرسال رسالة Telegram: {response.text}"
+                logger.error(error_msg)
+                return False
+            else:
+                logger.info("تم إرسال الرسالة إلى Telegram بنجاح")
+                return True
+        except Exception as e:
+            error_msg = f"خطأ في إرسال رسالة Telegram: {e}"
+            logger.error(error_msg)
+            return False
+
 class BNB_Trading_Bot:
     def __init__(self, api_key=None, api_secret=None, telegram_token=None, telegram_chat_id=None):
         self.notifier = None
@@ -293,12 +166,6 @@ class BNB_Trading_Bot:
             logger.error(error_msg)
             raise ConnectionError(error_msg)
             
-        # إضافة مدير الأوزان الزمنية
-        self.time_weight_manager = TimeWeightManager('bnb_time_weights_advanced.csv')
-        
-        # معامل تضخيم الوزن الزمني (0-1)
-        self.TIME_WEIGHT_FACTOR = 0.20  # 20% تأثير للوزن الزمني
-        
         self.fee_rate = 0.0005
         self.slippage = 0.00015
         self.trades = []
@@ -331,8 +198,7 @@ class BNB_Trading_Bot:
                     f"الحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}\n"
                     f"عتبة الشراء الأساسية: {self.BASELINE_BUY_THRESHOLD}%\n"
                     f"عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%\n"
-                    f"عتبة البيع: {self.SELL_THRESHOLD}%\n"
-                    f"تأثير الوزن الزمني: {self.TIME_WEIGHT_FACTOR * 100}%"
+                    f"عتبة البيع: {self.SELL_THRESHOLD}%"
                 )
         except Exception as e:
             logger.error(f"خطأ في جلب الرصيد الابتدائي: {e}")
@@ -494,7 +360,6 @@ class BNB_Trading_Bot:
             print(f"عتبة الشراء الأساسية: {self.BASELINE_BUY_THRESHOLD}%")
             print(f"عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%")
             print(f"عتبة البيع: {self.SELL_THRESHOLD}%")
-            print(f"تأثير الوزن الزمني: {self.TIME_WEIGHT_FACTOR * 100}%")
             print("="*50)
             
             return True
@@ -669,7 +534,7 @@ class BNB_Trading_Bot:
             return False
     
     def calculate_signal_strength(self, data, signal_type='buy'):
-        """تقييم قوة الإشارة من -100 إلى +100% مع الأوزان الجديدة"""
+        """تقييم قوة الإشارة من -100 إلى +100%"""
         latest = data.iloc[-1]
         score = 0
 
@@ -887,806 +752,485 @@ class BNB_Trading_Bot:
                 return -16.0 # عقوبة -80%
 
     def calculate_volume_score(self, data, signal_type):
-        """حساب درجة الحجم بتدرج دقيق"""
+        """حساب درجة الحجم"""
         latest = data.iloc[-1]
-        volume_ratio = latest['vol_ratio']
+        volume = latest['volume']
+        volume_ma = latest['volume_ma']
     
-        # اتجاه الحركة السعرية
-        price_move = latest['close'] - latest['open']
-        price_direction = 1 if price_move > 0 else -1 if price_move < 0 else 0
-    
-        # التوافق بين الحجم والاتجاه
-        direction_match = (price_direction == 1 and signal_type == 'buy') or \
-                         (price_direction == -1 and signal_type == 'sell')
-    
-        if volume_ratio > 3.5:          # حجم استثنائي
-            score = 18.0 + (2.0 if direction_match else -4.0)
-        elif volume_ratio > 2.5:        # حجم عالي جداً
-            score = 15.0 + (2.0 if direction_match else -3.0)
-        elif volume_ratio > 2.0:        # حجم عالي
-            score = 12.0 + (2.0 if direction_match else -2.0)
-        elif volume_ratio > 1.5:        # حجم فوق المتوسط
-            score = 9.0 + (1.0 if direction_match else -1.0)
-        elif volume_ratio > 1.2:        # حجم جيد
-            score = 6.0 + (1.0 if direction_match else -1.0)
-        elif volume_ratio > 0.9:        # حجم طبيعي
-            score = 3.0
-        elif volume_ratio > 0.7:        # حجم منخفض
-            score = 0.0
-        elif volume_ratio > 0.5:        # حجم منخفض جداً
-            score = -4.0
-        elif volume_ratio > 0.3:        # حجم ضعيف
-            score = -8.0
-        else:                           # حجم شبه معدوم
-            score = -12.0
-    
-        return max(min(score, 20.0), -20.0)
-
-    def calculate_time_weight_score(self, signal_type):
-        """حساب درجة الوزن الزمني"""
-        time_signal = self.time_weight_manager.get_current_time_weight()
-        
-        if not time_signal:
-            return 0
-        
-        # الوزن الزمني الأساسي (من -10 إلى +10)
-        base_time_weight = time_signal['weight']
-        
-        # تحويل إلى نطاق -20 إلى +20 (20% من 100)
-        time_score = base_time_weight * 2.0
-        
-        # إذا كانت الإشارة المطلوبة لا تتطابق مع الإشارة الزمنية
-        if (signal_type == 'buy' and time_signal['signal'] == 'SELL') or \
-           (signal_type == 'sell' and time_signal['signal'] == 'BUY'):
-            time_score = -abs(time_score)  # عقوبة أكبر لتعارض الإشارات
-        
-        return time_score
-
-    def calculate_market_trend_score(self, data, signal_type):
-        """حساب درجة اتجاه السوق بتدرج منطقي"""
-        latest = data.iloc[-1]
-    
-        # اتجاه طويل الأجل (EMA 200) + اتجاه متوسط (EMA 34)
-        price_vs_ema200 = ((latest['close'] - latest['ema200']) / latest['ema200']) * 100
-        price_vs_ema34 = ((latest['close'] - latest['ema34']) / latest['ema34']) * 100
-    
-        trend_strength = (price_vs_ema200 * 0.4) + (price_vs_ema34 * 0.6)  # وزن أكبر لـ EMA 34
+        # نسبة الحجم إلى المتوسط
+        volume_ratio = volume / volume_ma if volume_ma > 0 else 1
     
         if signal_type == 'buy':
-            if trend_strength > 8.0:    # اتجاه صعودي قوي جداً
+            if volume_ratio > 3.0:    # حجم كبير جداً (300%+)
+                return 20.0  # 100%
+            elif volume_ratio > 2.0:  # حجم كبير (200%+)
+                return 16.0  # 80%
+            elif volume_ratio > 1.5:  # حجم فوق المتوسط (150%+)
+                return 12.0  # 60%
+            elif volume_ratio > 1.2:  # حجم جيد (120%+)
+                return 8.0   # 40%
+            elif volume_ratio > 0.8:  # حجم طبيعي (80-120%)
+                return 4.0   # 20%
+            elif volume_ratio > 0.5:  # حجم منخفض (50-80%)
+                return 0.0   # 0%
+            else:            # حجم ضعيف جداً (<50%)
+                return -8.0  # عقوبة -40%
+    
+        else:  # sell
+            if volume_ratio > 3.0:    # حجم كبير جداً مع بيع
+                return 20.0  # 100%
+            elif volume_ratio > 2.0:  # حجم كبير مع بيع
+                return 16.0  # 80%
+            elif volume_ratio > 1.5:  # حجم فوق المتوسط مع بيع
+                return 12.0  # 60%
+            elif volume_ratio > 1.2:  # حجم جيد مع بيع
+                return 8.0   # 40%
+            elif volume_ratio > 0.8:  # حجم طبيعي
+                return 4.0   # 20%
+            elif volume_ratio > 0.5:  # حجم منخفض
+                return 0.0   # 0%
+            else:            # حجم ضعيف جداً
+                return -8.0  # عقوبة -40%
+
+    def calculate_market_trend_score(self, data, signal_type):
+        """حساب درجة اتجاه السوق العام"""
+        # استخدام آخر 50 شمعة لتحديد الاتجاه
+        recent_data = data.tail(50)
+    
+        # اتجاه بسيط (سعر الإغلاق الحالي مقابل بداية الفترة)
+        price_change = ((recent_data['close'].iloc[-1] / recent_data['close'].iloc[0]) - 1) * 100
+    
+        # قوة الاتجاه (معدل التغير)
+        trend_strength = abs(price_change)
+    
+        if signal_type == 'buy':
+            if price_change > 5.0:      # صعود قوي (>5%)
                 return 25.0  # 100%
-            elif trend_strength > 4.0:  # اتجاه صعودي قوي
+            elif price_change > 2.0:    # صعود جيد (2-5%)
                 return 20.0  # 80%
-            elif trend_strength > 1.5:  # اتجاه صعودي معتدل
+            elif price_change > 0.5:    # صعود خفيف (0.5-2%)
                 return 15.0  # 60%
-            elif trend_strength > -1.0: # اتجاه محايد
-                return 8.0   # 32%
-            elif trend_strength > -3.0: # اتجاه هبوطي طفيف
-                return 2.0   # 8%
-            elif trend_strength > -6.0: # اتجاه هبوطي
+            elif price_change > -1.0:   # ثبات نسبي (-1% إلى +0.5%)
+                return 10.0  # 40%
+            elif price_change > -3.0:   # هبوط خفيف (-3% إلى -1%)
+                return 5.0   # 20%
+            elif price_change > -6.0:   # هبوط متوسط (-6% إلى -3%)
+                return 0.0   # 0%
+            elif price_change > -10.0:  # هبوط قوي (-10% إلى -6%)
                 return -10.0 # عقوبة -40%
-            else:            # اتجاه هبوطي قوي
+            else:            # هبوط شديد (<-10%)
                 return -20.0 # عقوبة -80%
     
         else:  # sell
-            if trend_strength < -8.0:   # اتجاه هبوطي قوي جداً
+            if price_change < -5.0:     # هبوط قوي (<-5%)
                 return 25.0  # 100%
-            elif trend_strength < -4.0: # اتجاه هبوطي قوي
+            elif price_change < -2.0:   # هبوط جيد (-5% إلى -2%)
                 return 20.0  # 80%
-            elif trend_strength < -1.5: # اتجاه هبوطي معتدل
+            elif price_change < -0.5:   # هبوط خفيف (-2% إلى -0.5%)
                 return 15.0  # 60%
-            elif trend_strength < 1.0:  # اتجاه محايد
-                return 8.0   # 32%
-            elif trend_strength < 3.0:  # اتجاه صعودي طفيف
-                return 2.0   # 8%
-            elif trend_strength < 6.0:  # اتجاه صعودي
+            elif price_change < 1.0:    # ثبات نسبي (-0.5% إلى +1%)
+                return 10.0  # 40%
+            elif price_change < 3.0:    # صعود خفيف (1% إلى 3%)
+                return 5.0   # 20%
+            elif price_change < 6.0:    # صعود متوسط (3% إلى 6%)
+                return 0.0   # 0%
+            elif price_change < 10.0:   # صعود قوي (6% إلى 10%)
                 return -10.0 # عقوبة -40%
-            else:            # اتجاه صعودي قوي
+            else:            # صعود شديد (>10%)
                 return -20.0 # عقوبة -80%
-    
-    def calculate_cci_momentum(self, data, signal_type, period=20):
-        """حساب مؤشر CCI للزخم (الجديد)"""
-        try:
-            # حساب CCI بشكل صحيح
-            typical_price = (data['high'] + data['low'] + data['close']) / 3
-            sma = typical_price.rolling(window=period).mean()
-            mean_deviation = typical_price.rolling(window=period).apply(
-                lambda x: np.mean(np.abs(x - np.mean(x)))
-            )
-            cci = (typical_price - sma) / (0.015 * mean_deviation)
-            
-            current_cci = cci.iloc[-1]
-            
-            if signal_type == 'buy':
-                if current_cci < -100:  # ذروة بيع
-                    return 8
-                elif current_cci > 100:  # ذروة شراء
-                    return -8
-            else:
-                if current_cci > 100:  # ذروة شراء
-                    return 8
-                elif current_cci < -100:  # ذروة بيع
-                    return -8
-                    
-        except Exception as e:
-            logger.error(f"خطأ في حساب CCI: {e}")
-        
-        return 0
-    
-    def calculate_dollar_size(self, signal_strength, signal_type='buy'):
-        """حساب حجم الصفقة بالدولار حسب قوة الإشارة"""
-        abs_strength = abs(signal_strength)
-        
-        if signal_type == 'buy' and signal_strength > 0:
-            if abs_strength >= 80:    # إشارة شراء قوية جداً
-                base_size = 30
-                bonus = (abs_strength - 80) * 1.0
-                return min(base_size + bonus, 50)
-            
-            elif abs_strength >= 50:  # إشارة شراء جيدة
-                base_size = 15
-                bonus = (abs_strength - 50) * 0.5
-                return min(base_size + bonus, 25)
-            
-            elif abs_strength >= 25:  # إشارة شراء خفيفة
-                base_size = 5
-                bonus = (abs_strength - 25) * 0.3
-                return min(base_size + bonus, 10)
-            
-            else:
-                return 0
-                
-        elif signal_type == 'sell' and signal_strength > 0:
-            if abs_strength >= 80:    # إشارة بيع قوية جداً
-                base_size = 30
-                bonus = (abs_strength - 80) * 1.0
-                return min(base_size + bonus, 50)
-            
-            elif abs_strength >= 50:  # إشارة بيع جيدة
-                base_size = 15
-                bonus = (abs_strength - 50) * 0.5
-                return min(base_size + bonus, 25)
-            
-            elif abs_strength >= 25:  # إشارة بيع خفيفة
-                base_size = 5
-                bonus = (abs_strength - 25) * 0.3
-                return min(base_size + bonus, 10)
-            
-            else:
-                return 0
-        else:
-            return 0
-    
-    def get_strength_level(self, strength):
-        """الحصول على اسم مستوى القوة"""
-        abs_strength = abs(strength)
-        if abs_strength >= 80: return "4 🟢 (قوي جداً)"
-        elif abs_strength >= 50: return "3 🟡 (قوي)"
-        elif abs_strength >= 25: return "2 🔵 (متوسط)"
-        else: return "1 ⚪ (ضعيف)"
-    
-    def calculate_rsi(self, data, period=14):
-        delta = data.diff()
-        gain = (delta.where(delta > 0, 0)).fillna(0)
-        loss = (-delta.where(delta < 0, 0)).fillna(0)
-        
-        avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.fillna(50)
-    
-    def calculate_ma(self, data, period):
-        return data.rolling(window=period).mean()
-    
-    def calculate_bollinger_bands(self, data, period=20, std_dev=2):
-        sma = data.rolling(window=period).mean()
-        std = data.rolling(window=period).std()
-        upper_band = sma + (std * std_dev)
-        lower_band = sma - (std * std_dev)
-        return upper_band, sma, lower_band
-    
-    def calculate_atr(self, df, period=14):
-        high = df["high"]
-        low = df["low"]
-        close = df["close"]
-        prev_close = close.shift(1)
-        tr1 = (high - low).abs()
-        tr2 = (high - prev_close).abs()
-        tr3 = (low - prev_close).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    
-    def calculate_macd(self, series, fast=12, slow=26, signal=9):
-        ema_fast = series.ewm(span=fast, adjust=False).mean()
-        ema_slow = series.ewm(span=slow, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        sig = macd_line.ewm(span=signal, adjust=False).mean()
-        hist = macd_line - sig
-        return macd_line, sig, hist
-    
-    def get_historical_data(self, interval=Client.KLINE_INTERVAL_15MINUTE, lookback='2000 hour ago UTC'):
-        try:
-            klines = self.client.get_historical_klines(self.symbol, interval, lookback)
-            if not klines:
-                error_msg = f"⚠️ لا توجد بيانات لـ {self.symbol}"
-                self.send_notification(error_msg)
-                return None
-            
-            data = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                            'close_time', 'quote_asset_volume', 'number_of_trades', 
-                                            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-            data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                data[col] = pd.to_numeric(data[col], errors='coerce')
-        
-            data = data.dropna()
-        
-            if len(data) < 100:
-                error_msg = f"⚠️ بيانات غير كافية لـ {self.symbol}: {len(data)} صفوف فقط"
-                self.send_notification(error_msg)
-                return None
-        
-            # حساب جميع المؤشرات المطلوبة
-            data['rsi'] = self.calculate_rsi(data['close'])
-            data['atr'] = self.calculate_atr(data)
-            data = data.dropna() 
 
-            data['ema34'] = data['close'].ewm(span=34, adjust=False).mean()
-        
-            # المتوسطات المتحركة الأسية
-            data['ema200'] = data['close'].ewm(span=200, adjust=False).mean()
-            data['ema50'] = data['close'].ewm(span=50, adjust=False).mean()
-            data['ema21'] = data['close'].ewm(span=21, adjust=False).mean()
-            data['ema9'] = data['close'].ewm(span=9, adjust=False).mean()
-        
-            # حساب Bollinger Bands
-            data['bb_upper'], data['bb_middle'], data['bb_lower'] = self.calculate_bollinger_bands(data['close'])
-        
-            data['vol_ma20'] = data['volume'].rolling(20).mean()
-            data['vol_ratio'] = data['volume'] / data['vol_ma20']
-         
-            macd_line, macd_sig, macd_hist = self.calculate_macd(data['close'])
-            data['macd'] = macd_line
-            data['macd_sig'] = macd_sig
-            data['macd_hist'] = macd_hist
-        
-            return data
+    def get_historical_data(self, symbol, interval, limit=100):
+        """جلب البيانات التاريخية من Binance"""
+        try:
+            klines = self.client.get_klines(
+                symbol=symbol,
+                interval=interval,
+                limit=limit
+            )
+            
+            data = []
+            for k in klines:
+                data.append({
+                    'timestamp': k[0],
+                    'open': float(k[1]),
+                    'high': float(k[2]),
+                    'low': float(k[3]),
+                    'close': float(k[4]),
+                    'volume': float(k[5]),
+                    'close_time': k[6],
+                    'quote_volume': float(k[7]),
+                    'trades': k[8]
+                })
+            
+            df = pd.DataFrame(data)
+            
+            # حساب المؤشرات الفنية
+            df = self.calculate_technical_indicators(df)
+            
+            return df
+            
         except Exception as e:
-            error_msg = f"❌ خطأ في جلب البيانات: {e}"
-            self.send_notification(error_msg)
+            error_msg = f"❌ خطأ في جلب البيانات التاريخية: {e}"
+            logger.error(error_msg)
+            if self.notifier:
+                self.notifier.send_message(error_msg)
             return None
 
-    def calculate_dynamic_stop_loss_take_profit(self, entry_price, signal_strength, atr_value):
-        """حساب وقف الخسارة وجني الأرباح بشكل ديناميكي - مع تحسين RR"""
-        abs_strength = abs(signal_strength)
-    
-        # تحسين معاملات ATR لنسبة مخاطرة/عائد أفضل
-        if abs_strength >= 80:    # إشارة قوية → مجال أوسع
-            stop_multiplier = 3.5    # زيادة الحماية (من 4.0)
-            profit_multiplier = 7.0  # أهداف أكبر (من 6.0) - RR ≈ 2:1
-        elif abs_strength >= 50:  # إشارة متوسطة → مجال متوسط
-            stop_multiplier = 3.0    # (من 3.5)
-            profit_multiplier = 6.0  # (من 5.0) - RR ≈ 2:1
-        else:                     # إشارة ضعيفة → مجال أقرب
-            stop_multiplier = 2.5    # (من 3.0)
-            profit_multiplier = 5.0  # (من 4.0) - RR ≈ 2:1
-    
-        if signal_strength > 0:  # إشارة شراء
-            stop_loss = entry_price - (stop_multiplier * atr_value)
-            take_profit = entry_price + (profit_multiplier * atr_value)
-        else:  # إشارة بيع
-            stop_loss = entry_price + (stop_multiplier * atr_value)
-            take_profit = entry_price - (profit_multiplier * atr_value)
-    
-        return stop_loss, take_profit
-
-    def get_dynamic_threshold(self, signal_type):
-        """عتبات ديناميكية حسب قوة الاتجاه العام"""
-        data = self.get_historical_data()
-        if data is None:
-            return self.BASELINE_BUY_THRESHOLD if signal_type == 'buy' else self.SELL_THRESHOLD
-    
-        latest = data.iloc[-1]
-        trend_strength = abs((latest['close'] - latest['ema34']) / latest['ema34'] * 100)
-    
-        if signal_type == 'buy':
-            if trend_strength > 5:  # اتجاه قوي
-                return self.BASELINE_BUY_THRESHOLD - 5  # تخفيف العتبة في الاتجاه القوي
-            elif trend_strength < 2:  # اتجاه ضعيف
-                return self.BASELINE_BUY_THRESHOLD + 5  # تشديد العتبة في الاتجاه الضعيف
-            else:
-                return self.BASELINE_BUY_THRESHOLD
-        else:
-            # نفس المنطق للبيع ولكن بشكل معكوس
-            return self.SELL_THRESHOLD
-    
-   def execute_real_trade(self, signal_type, signal_strength, current_price, stop_loss, take_profit):
-        # التحقق من مساحة الأوامر للصفقات الشراء فقط
-        if signal_type == 'buy':
-            order_status = self.get_order_space_status(self.symbol)
-        
-            if order_status == "FULL":
-                # إذا كانت الأوامر ممتلئة، نتحقق إذا كانت قوة الإشارة تصل للعتبة المشددة
-                if signal_strength < self.STRICT_BUY_THRESHOLD:
-                    self.send_notification("❌ تم إلغاء الصفقة - الأوامر ممتلئة والإشارة ضعيفة للعتبة المشددة")
-                    return False
-                else:
-                    self.send_notification("⚠️ تحذير: الأوامر ممتلئة ولكن الإشارة قوية enough للعتبة المشددة")
-            elif order_status == "NEAR_FULL":
-                self.send_notification("⚠️ تحذير: مساحة الأوامر قريبة من الامتلاء")
-    
+    def calculate_technical_indicators(self, df):
+        """حساب المؤشرات الفنية"""
         try:
-            trade_size = self.calculate_dollar_size(signal_strength, signal_type)
-    
-            if trade_size <= 0:
-                return False
-    
-            logger.info(f"بدء تنفيذ صفقة {signal_type} بقوة {signal_strength}% بحجم {trade_size}$")
-    
-            if signal_type == 'buy':
-                can_trade, usdt_balance = self.check_balance_before_trade(trade_size)
+            # المتوسطات المتحركة
+            df['ema34'] = df['close'].ewm(span=34).mean()
+            
+            # RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
+            
+            # MACD
+            exp12 = df['close'].ewm(span=12).mean()
+            exp26 = df['close'].ewm(span=26).mean()
+            df['macd'] = exp12 - exp26
+            df['macd_sig'] = df['macd'].ewm(span=9).mean()
+            
+            # بولينجر باند
+            df['bb_middle'] = df['close'].rolling(window=20).mean()
+            bb_std = df['close'].rolling(window=20).std()
+            df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+            df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
+            
+            # متوسط الحجم
+            df['volume_ma'] = df['volume'].rolling(window=20).mean()
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"خطأ في حساب المؤشرات الفنية: {e}")
+            return df
+
+    def calculate_trade_size(self, signal_strength, current_price):
+        """حساب حجم الصفقة بناء على قوة الإشارة"""
+        try:
+            # تحويل قوة الإشارة إلى نسبة (0-100%)
+            strength_percentage = abs(signal_strength) / 100.0
+            
+            # حساب حجم الصفقة بشكل تدريجي
+            base_size = self.MIN_TRADE_SIZE
+            adjustable_range = self.MAX_TRADE_SIZE - self.MIN_TRADE_SIZE
+            
+            trade_size = base_size + (adjustable_range * strength_percentage)
+            
+            # تقريب إلى منزلتين عشريتين
+            trade_size = round(trade_size, 2)
+            
+            # التأكد من أن الحجم ضمن الحدود
+            trade_size = max(self.MIN_TRADE_SIZE, min(trade_size, self.MAX_TRADE_SIZE))
+            
+            logger.info(f"📊 قوة الإشارة: {signal_strength:.1f}% -> حجم الصفقة: ${trade_size:.2f}")
+            
+            return trade_size
+            
+        except Exception as e:
+            logger.error(f"خطأ في حساب حجم الصفقة: {e}")
+            return self.MIN_TRADE_SIZE
+
+    def execute_market_order(self, side, trade_size, symbol, signal_strength):
+        """تنفيذ أمر سوقي مع إدارة المخاطر"""
+        try:
+            # التحقق من مساحة الأوامر أولاً
+            if not self.manage_order_space(symbol):
+                return None
+            
+            # الحصول على السعر الحالي
+            ticker = self.client.get_symbol_ticker(symbol=symbol)
+            current_price = float(ticker['price'])
+            
+            # حساب الكمية بناء على حجم الصفقة بالسعر الحالي
+            quantity = trade_size / current_price
+            
+            # الحصول على معلومات الرمز للتقريب الصحيح
+            symbol_info = self.client.get_symbol_info(symbol)
+            step_size = next((filter['stepSize'] for filter in symbol_info['filters'] 
+                            if filter['filterType'] == 'LOT_SIZE'), '0.000001')
+            
+            # تقريب الكمية إلى المنزلة الصحيحة
+            precision = len(step_size.rstrip('0').split('.')[-1])
+            quantity = round(quantity, precision)
+            
+            if quantity <= 0:
+                logger.error("❌ الكمية غير صحيحة")
+                return None
+            
+            # تنفيذ الأمر السوقي
+            order = self.client.create_order(
+                symbol=symbol,
+                side=side,
+                type=ORDER_TYPE_MARKET,
+                quantity=quantity
+            )
+            
+            # حساب السعر الفعلي للتنفيذ (متوسط سعر التنفيذ)
+            fills = order.get('fills', [])
+            if fills:
+                executed_qty = sum(float(fill['qty']) for fill in fills)
+                executed_price = sum(float(fill['price']) * float(fill['qty']) for fill in fills) / executed_qty
+            else:
+                executed_price = current_price
+            
+            # تسجيل الصفقة
+            trade_type = "buy" if side == SIDE_BUY else "sell"
+            self.add_trade_record(
+                trade_type=trade_type,
+                quantity=quantity,
+                price=executed_price,
+                trade_size=trade_size,
+                signal_strength=signal_strength,
+                order_id=order['orderId'],
+                status="executed"
+            )
+            
+            # إرسال إشعار
+            order_type_emoji = "🟢" if side == SIDE_BUY else "🔴"
+            message = (
+                f"{order_type_emoji} <b>{'شراء' if side == SIDE_BUY else 'بيع'} BNB</b>\n\n"
+                f"💰 الحجم: ${trade_size:.2f}\n"
+                f"📊 الكمية: {quantity:.4f} BNB\n"
+                f"🏷️ السعر: ${executed_price:.4f}\n"
+                f"⚡ قوة الإشارة: {signal_strength:.1f}%\n"
+                f"🆔 رقم الأمر: {order['orderId']}"
+            )
+            
+            self.send_notification(message)
+            
+            logger.info(f"✅ تم تنفيذ أمر {side}: {quantity:.4f} BNB بسعر ${executed_price:.4f}")
+            
+            return order
+            
+        except Exception as e:
+            error_msg = f"❌ خطأ في تنفيذ الأمر السوقي: {e}"
+            logger.error(error_msg)
+            self.send_notification(f"❌ فشل تنفيذ الأمر: {str(e)}")
+            return None
+
+    def execute_limit_order(self, side, trade_size, symbol, signal_strength, price_offset_percent=0.1):
+        """تنفيذ أمر محدود مع إدارة المخاطر"""
+        try:
+            # التحقق من مساحة الأوامر أولاً
+            if not self.manage_order_space(symbol):
+                return None
+            
+            # الحصول على السعر الحالي
+            ticker = self.client.get_symbol_ticker(symbol=symbol)
+            current_price = float(ticker['price'])
+            
+            # حساب سعر الأمر المحدود مع إزاحة
+            if side == SIDE_BUY:
+                limit_price = current_price * (1 - price_offset_percent / 100)
+            else:
+                limit_price = current_price * (1 + price_offset_percent / 100)
+            
+            # تقريب السعر حسب متطلبات Binance
+            limit_price = self.format_price(limit_price, symbol)
+            
+            # حساب الكمية
+            quantity = trade_size / limit_price
+            
+            # الحصول على معلومات الرمز للتقريب الصحيح
+            symbol_info = self.client.get_symbol_info(symbol)
+            step_size = next((filter['stepSize'] for filter in symbol_info['filters'] 
+                            if filter['filterType'] == 'LOT_SIZE'), '0.000001')
+            
+            # تقريب الكمية إلى المنزلة الصحيحة
+            precision = len(step_size.rstrip('0').split('.')[-1])
+            quantity = round(quantity, precision)
+            
+            if quantity <= 0:
+                logger.error("❌ الكمية غير صحيحة")
+                return None
+            
+            # تنفيذ الأمر المحدود
+            order = self.client.create_order(
+                symbol=symbol,
+                side=side,
+                type=ORDER_TYPE_LIMIT,
+                timeInForce=TIME_IN_FORCE_GTC,
+                quantity=quantity,
+                price=format(limit_price, '.8f')
+            )
+            
+            # تسجيل الصفقة
+            trade_type = "buy" if side == SIDE_BUY else "sell"
+            self.add_trade_record(
+                trade_type=trade_type,
+                quantity=quantity,
+                price=limit_price,
+                trade_size=trade_size,
+                signal_strength=signal_strength,
+                order_id=order['orderId'],
+                status="pending"
+            )
+            
+            # إرسال إشعار
+            order_type_emoji = "🟢" if side == SIDE_BUY else "🔴"
+            message = (
+                f"{order_type_emoji} <b>{'شراء' if side == SIDE_BUY else 'بيع'} محدود لـ BNB</b>\n\n"
+                f"💰 الحجم: ${trade_size:.2f}\n"
+                f"📊 الكمية: {quantity:.4f} BNB\n"
+                f"🏷️ السعر المستهدف: ${limit_price:.4f}\n"
+                f"📈 السعر الحالي: ${current_price:.4f}\n"
+                f"⚡ قوة الإشارة: {signal_strength:.1f}%\n"
+                f"🆔 رقم الأمر: {order['orderId']}"
+            )
+            
+            self.send_notification(message)
+            
+            logger.info(f"✅ تم وضع أمر {side} محدود: {quantity:.4f} BNB بسعر ${limit_price:.4f}")
+            
+            return order
+            
+        except Exception as e:
+            error_msg = f"❌ خطأ في تنفيذ الأمر المحدود: {e}"
+            logger.error(error_msg)
+            self.send_notification(f"❌ فشل وضع الأمر المحدود: {str(e)}")
+            return None
+
+    def monitor_and_manage_orders(self):
+        """مراقبة وإدارة الأوامر المعلقة"""
+        try:
+            open_orders = self.client.get_open_orders(symbol=self.symbol)
+            
+            for order in open_orders:
+                order_id = order['orderId']
+                order_time = datetime.fromtimestamp(order['time'] / 1000)
+                time_diff = (datetime.now() - order_time).total_seconds() / 60  # الفرق بالدقائق
+                
+                # إذا مر أكثر من 30 دقيقة على الأمر ولم ينفذ
+                if time_diff > 30:
+                    try:
+                        self.client.cancel_order(
+                            symbol=self.symbol,
+                            orderId=order_id
+                        )
+                        
+                        # تحديث سجل الصفقة
+                        for trade in self.trade_history:
+                            if trade.get('order_id') == order_id and trade.get('status') == 'pending':
+                                trade['status'] = 'cancelled'
+                                break
+                        
+                        logger.info(f"✅ تم إلغاء الأمر {order_id} لانتهاء الوقت")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ خطأ في إلغاء الأمر {order_id}: {e}")
+            
+            # حفظ التغييرات في تاريخ الصفقات
+            self.save_trade_history()
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في مراقبة الأوامر: {e}")
+
+    def run_trading_cycle(self):
+        """تشغيل دورة تداول واحدة"""
+        try:
+            logger.info("🔄 بدء دورة التداول...")
+            
+            # جلب البيانات وتحليلها
+            data = self.get_historical_data(self.symbol, Client.KLINE_INTERVAL_15MINUTE, 100)
+            if data is None or data.empty:
+                logger.error("❌ فشل في جلب البيانات")
+                return
+            
+            # حساب قوة الإشارة للشراء والبيع
+            buy_strength = self.calculate_signal_strength(data, 'buy')
+            sell_strength = self.calculate_signal_strength(data, 'sell')
+            
+            logger.info(f"📊 قوة إشارة الشراء: {buy_strength:.1f}%")
+            logger.info(f"📊 قوة إشارة البيع: {sell_strength:.1f}%")
+            
+            # الحصول على السعر الحالي
+            ticker = self.client.get_symbol_ticker(symbol=self.symbol)
+            current_price = float(ticker['price'])
+            
+            # اتخاذ قرار التداول
+            if buy_strength >= self.BASELINE_BUY_THRESHOLD:
+                # حساب حجم الصفقة بناء على قوة الإشارة
+                trade_size = self.calculate_trade_size(buy_strength, current_price)
+                
+                # استخدام أمر السوق للإشارات القوية جداً، والمحدود للإشارات المتوسطة
+                if buy_strength >= self.STRICT_BUY_THRESHOLD:
+                    self.execute_market_order(SIDE_BUY, trade_size, self.symbol, buy_strength)
+                else:
+                    self.execute_limit_order(SIDE_BUY, trade_size, self.symbol, buy_strength)
                     
-                if not can_trade:
-                    available_balance = usdt_balance * 0.95
-                    if available_balance >= 5:
-                        trade_size = available_balance
-                        self.send_notification(f"⚠️ تعديل حجم الصفقة. أصبح: ${trade_size:.2f} (الرصيد المتاح: ${usdt_balance:.2f})")
-                    else:
-                        self.send_notification(f"❌ رصيد غير كافي حتى لأصغر صفقة. المطلوب: $5، المتاح: ${usdt_balance:.2f}")
-                        return False
-        
-                quantity = trade_size / current_price
-        
-                info = self.client.get_symbol_info(self.symbol)
-                step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
-                precision = len(str(step_size).split('.')[1].rstrip('0'))
-                quantity = round(quantity - (quantity % step_size), precision)
-        
-                if quantity <= 0:
-                    self.send_notification("⚠️ الكمية غير صالحة للشراء")
-                    return False
-        
-                order = self.client.order_market_buy(
-                    symbol=self.symbol,
-                    quantity=quantity
-                )
-        
-                self.add_trade_record(
-                    trade_type="buy",
-                    quantity=quantity,
-                    price=current_price,
-                    trade_size=trade_size,
-                    signal_strength=signal_strength,
-                    order_id=order.get('orderId', 'N/A')
-                )
-        
-                # محاولة وضع أوامر الوقف حتى لو كانت الأوامر ممتلئة (لأنها صفقة قوية)
-                try:
-                    formatted_stop_loss = self.format_price(stop_loss, self.symbol)
-                    formatted_take_profit = self.format_price(take_profit, self.symbol)
+            elif sell_strength >= self.SELL_THRESHOLD:
+                # حساب حجم الصفقة بناء على قوة الإشارة
+                trade_size = self.calculate_trade_size(sell_strength, current_price)
+                self.execute_market_order(SIDE_SELL, trade_size, self.symbol, sell_strength)
             
-                    oco_order = self.client.order_oco_sell(
-                        symbol=self.symbol,
-                        quantity=quantity,
-                        stopPrice=formatted_stop_loss,
-                        stopLimitPrice=formatted_stop_loss,
-                        price=formatted_take_profit,
-                        stopLimitTimeInForce='GTC'
-                    )
-                    logger.info(f"✅ تم وضع أوامر الوقف: SL={formatted_stop_loss}, TP={formatted_take_profit}")
+            # مراقبة وإدارة الأوامر المعلقة
+            self.monitor_and_manage_orders()
             
-                except Exception as e:
-                    error_msg = f"⚠️ فشل وضع أوامر الوقف: {e}"
-                    self.send_notification(error_msg)
-                    logger.error(error_msg)
-        
-                return True
-        
-            elif signal_type == 'sell':
-                total_balance, balances, _ = self.get_account_balance_details()
-                bnb_balance = balances.get('BNB', {}).get('free', 0)
-        
-                if bnb_balance <= 0.001:
-                    self.send_notification("⚠️ رصيد BNB غير كافي للبيع")
-                    return False
-        
-                quantity_by_trade_size = trade_size / current_price
-        
-                if quantity_by_trade_size > bnb_balance:
-                    available_balance = bnb_balance * 0.95
-                    quantity_to_sell = available_balance
-                    actual_trade_size = quantity_to_sell * current_price
+            logger.info("✅ اكتملت دورة التداول بنجاح")
             
-                    if actual_trade_size >= 5:
-                        trade_size = actual_trade_size
-                        self.send_notification(f"⚠️ تعديل حجم صفقة البيع. أصبح: ${trade_size:.2f} (الرصيد المتاح: {bnb_balance:.6f} BNB)")
-                    else:
-                        self.send_notification(f"❌ رصيد BNB غير كافي حتى لأصغر صفقة بيع. المطلوب: $5، المتاح: ${bnb_balance * current_price:.2f}")
-                        return False
-                else:
-                    quantity_to_sell = quantity_by_trade_size
-        
-                info = self.client.get_symbol_info(self.symbol)
-                step_size = float([f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0])
-                precision = len(str(step_size).split('.')[1].rstrip('0'))
-                quantity = round(quantity_to_sell - (quantity_to_sell % step_size), precision)
-        
-                if quantity <= 0:
-                    self.send_notification("⚠️ الكمية غير صالحة للبيع")
-                    return False
-        
-                order = self.client.order_market_sell(
-                    symbol=self.symbol,
-                    quantity=quantity
-                )
-        
-                self.add_trade_record(
-                    trade_type="sell",
-                    quantity=quantity,
-                    price=current_price,
-                    trade_size=quantity * current_price,
-                    signal_strength=signal_strength,
-                    order_id=order.get('orderId', 'N/A')
-                 )
-        
-                return True
-        
         except Exception as e:
-            error_msg = f"❌ خطأ في تنفيذ الصفقة: {e}"
-            self.send_notification(error_msg)
+            error_msg = f"❌ خطأ في دورة التداول: {e}"
             logger.error(error_msg)
-            return False
-    
-    
-    def bnb_strategy(self, data):
-        """استراتيجية التداول - الإصدار المحسن"""
-        if data is None or len(data) < 100:
-            return 'hold', 0, 0, 0
-    
-        latest = data.iloc[-1]
-        current_price = latest['close']
-        atr_value = latest['atr']
-    
-        buy_strength = self.calculate_signal_strength(data, 'buy')
-        sell_strength = self.calculate_signal_strength(data, 'sell')
-    
-        # الحصول على حالة مساحة الأوامر
-        order_space_status = self.get_order_space_status(self.symbol)
-    
-        # تطبيق العتبات المختلفة حسب حالة الأوامر
-        if buy_strength > 0 and buy_strength > sell_strength:
-            # تحديد العتبة المناسبة حسب حالة الأوامر
-            if order_space_status == "FULL":
-                # الأوامر ممتلئة - تطبيق العتبة المشددة
-                required_threshold = self.STRICT_BUY_THRESHOLD
-            else:
-                # الأوامر متاحة - تطبيق العتبة الأساسية
-                required_threshold = self.BASELINE_BUY_THRESHOLD
+            if self.notifier:
+                self.notifier.send_message(error_msg)
+
+    def run_continuous(self, cycle_minutes=15):
+        """تشغيل البوت بشكل مستمر"""
+        logger.info(f"🚀 بدء التشغيل المستمر - دورة كل {cycle_minutes} دقائق")
         
-            if buy_strength >= required_threshold:
-                stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
-                    current_price, buy_strength, atr_value
-                )
-                return 'buy', buy_strength, stop_loss, take_profit
-            else:
-                logger.info(f"📊 إشارة شراء قوتها {buy_strength}% تم تجاهلها (العتبة المطلوبة: {required_threshold}%)")
-                return 'hold', 0, 0, 0
-            
-        elif sell_strength > 0 and sell_strength > buy_strength:
-            # البيع لا يتأثر بمساحة الأوامر (عتبة ثابتة)
-            if sell_strength >= self.SELL_THRESHOLD:
-                stop_loss, take_profit = self.calculate_dynamic_stop_loss_take_profit(
-                    current_price, -sell_strength, atr_value
-                )
-                return 'sell', sell_strength, stop_loss, take_profit
-            else:
-                logger.info(f"📊 إشارة بيع قوتها {sell_strength}% تم تجاهلها (عتبة البيع: {self.SELL_THRESHOLD}%)")
-                return 'hold', 0, 0, 0
-    
-        else:
-            return 'hold', 0, 0, 0
-            
-    def check_balance_before_trade(self, required_usdt):
-        """التحقق من الرصيد قبل التنفيذ"""
-        try:
-            total_balance, balances, _ = self.get_account_balance_details()
-            usdt_balance = balances.get('USDT', {}).get('free', 0)
-            
-            if usdt_balance >= required_usdt:
-                return True, usdt_balance
-            else:
-                return False, usdt_balance
-        except Exception as e:
-            logger.error(f"خطأ في التحقق من الرصيد: {e}")
-            return False, 0
-    
-    def execute_trade(self):
-        data = self.get_historical_data()
-        if data is None:
-            return False
-            
-        signal_type, signal_strength, stop_loss, take_profit = self.bnb_strategy(data)
-        latest = data.iloc[-1]
-        current_price = latest['close']
-        
-        if signal_type in ['buy', 'sell']:
-            # إرسال إشعار تحليلي قبل التنفيذ
-            order_status = self.get_order_space_status(self.symbol)
-            analysis_msg = self.generate_signal_analysis(data, signal_type, signal_strength, order_status)
-            self.send_notification(analysis_msg)
-            
-            success = self.execute_real_trade(signal_type, signal_strength, current_price, stop_loss, take_profit)
-            if success:
-                level = self.get_strength_level(signal_strength)
-                msg = f"🎯 <b>{'شراء' if signal_type == 'buy' else 'بيع'} بمستوى {level}</b>\n\n"
-                msg += f"قوة الإشارة: {signal_strength}%\n"
-                msg += f"حجم الصفقة: ${self.calculate_dollar_size(signal_strength, signal_type):.2f}\n"
-                msg += f"السعر: ${current_price:.4f}\n"
-                
-                if signal_type == 'buy':
-                    msg += f"وقف الخسارة: ${stop_loss:.4f}\n"
-                    msg += f"جني الأرباح: ${take_profit:.4f}\n"
-                    msg += f"نسبة المخاطرة/العائد: 1:{(take_profit - current_price) / (current_price - stop_loss):.2f}\n"
-                
-                msg += f"حالة الأوامر: {order_status}"
-                self.send_notification(msg)
-            return success
-        
-        return False
-
-    def generate_signal_analysis(self, data, signal_type, signal_strength, order_status):
-        """إنشاء تحليل مفصل للإشارة مع نسبة مساهمة كل مؤشر"""
-        latest = data.iloc[-1]
-
-        analysis = f"📊 <b>تحليل الإشارة ({signal_type.upper()}) - النظام الجديد</b>\n\n"
-        analysis += f"قوة الإشارة: {signal_strength}%\n"
-        analysis += f"السعر الحالي: ${latest['close']:.4f}\n"
-        analysis += f"الاتجاه العام (EMA 34): {'صاعد' if latest['close'] > latest['ema34'] else 'هبوطي'}\n\n"
-
-        # إضافة مساهمة كل مؤشر مع الأوزان الجديدة
-        analysis += "📈 <b>مساهمة المؤشرات (الأوزان الجديدة):</b>\n"
-
-        if hasattr(self, 'last_indicator_contributions'):
-            contributions = self.last_indicator_contributions
-
-            # تحويل أسماء المؤشرات للعربية مع الأوزان
-            indicator_names = {
-                'market_trend': 'اتجاه السوق (25%)',
-                'moving_averages': 'المتوسطات المتحركة (20%)',
-                'macd': 'مؤشر MACD (20%)',
-                'rsi': 'مؤشر RSI (15%)',
-                'bollinger_bands': 'بولينجر باند (20%)',
-                'volume': 'الحجم (20%)'
-            }
-
-            for indicator, value in contributions.items():
-                arabic_name = indicator_names.get(indicator, indicator)
-                emoji = "🟢" if value > 0 else "🔴" if value < 0 else "⚪"
-                analysis += f"{emoji} {arabic_name}: {value:+.1f}\n"
-
-        analysis += f"\n📊 <b>التفاصيل الفنية:</b>\n"
-        analysis += f"EMA 34: ${latest['ema34']:.4f}\n"
-        analysis += f"السعر/EMA 34: {((latest['close'] - latest['ema34']) / latest['ema34'] * 100):+.2f}%\n"
-        analysis += f"RSI: {latest['rsi']:.1f}\n"
-        analysis += f"MACD: {latest['macd']:.6f}\n"
-        analysis += f"الحجم: {latest['vol_ratio']:.1f}x المتوسط\n"
-        analysis += f"بولينجر: {((latest['close'] - latest['bb_lower']) / (latest['bb_upper'] - latest['bb_lower']) * 100):.1f}%\n"
-        analysis += f"حالة الأوامر: {order_status}\n"
-
-        # تحديد العتبة المطلوبة حسب حالة الأوامر
-        if signal_type == 'buy':
-            if order_status == "FULL":         required_threshold = self.STRICT_BUY_THRESHOLD
-                analysis += f"العتبة المطلوبة: {required_threshold}% (مشددة - الأوامر ممتلئة)\n"
-            else:
-                required_threshold = self.BASELINE_BUY_THRESHOLD
-                analysis += f"العتبة المطلوبة: {required_threshold}% (أساسية)\n"
-        else:
-            required_threshold = self.SELL_THRESHOLD
-            analysis += f"العتبة المطلوبة: {required_threshold}%\n"
-
-        analysis += f"القرار: {'✅ مقبولة' if abs(signal_strength) >= required_threshold else '❌ مرفوضة'}"
-
-        return analysis
-    
-    def check_time_alerts(self):
-        """التحقق من الإنذارات الزمنية وإرسالها"""
-        try:
-            alert_windows = self.time_weight_manager.check_alert_windows(alert_minutes=5)
-            
-            for window in alert_windows:
-                alert_message = self.generate_time_alert_message(window)
-                self.send_notification(alert_message)
-                
-        except Exception as e:
-            logger.error(f"خطأ في التحقق من الإنذارات الزمنية: {e}")
-
-    def generate_time_alert_message(self, window):
-        """إنشاء رسالة إنذار زمني"""
-        emoji = "🟢" if window['signal'] == 'BUY' else "🔴"
-        action = "شراء" if window['signal'] == 'BUY' else "بيع"
-        
-        message = f"⏰ <b>إنذار مسبق - نافذة تداول قريبة</b>\n\n"
-        message += f"{emoji} إشارة {action} قوية قادمة خلال {window['minutes_away']:.1f} دقائق\n"
-        message += f"📅 اليوم: {window['weekday_arabic']}\n"
-        message += f"🕒 الوقت: {window['time']}\n"
-        message += f"💪 قوة الإشارة: {window['strength']:.1f}/10\n"
-        message += f"📊 الوزن: {window['weight']:.2f}\n\n"
-        message += f"⚡ استعد لفرصة تداول محتملة"
-        
-        return message
-
-    def get_daily_optimal_schedule(self):
-        """الحصول على جدول النوافذ المثلى لليوم"""
-        today_english = datetime.now().strftime('%A')
-        today_arabic = self.time_weight_manager.weekday_map.get(today_english, today_english)
-        
-        today_windows = [
-            window for window in self.time_weight_manager.optimal_windows 
-            if window['weekday_arabic'] == today_arabic
-        ]
-        
-        # ترتيب النوافذ حسب الوقت
-        today_windows.sort(key=lambda x: (x['hour'], x['minute']))
-        
-        return today_windows
-
-    def send_performance_report(self):
-        try:
-            total_balance, balances, bnb_price = self.get_account_balance_details()
-            
-            if total_balance is None:
-                return
-            
-            profit_loss = total_balance - self.initial_balance
-            profit_loss_percent = (profit_loss / self.initial_balance) * 100 if self.initial_balance > 0 else 0
-            
-            current_orders = self.get_algo_orders_count(self.symbol)
-            order_status = self.get_order_space_status(self.symbol)
-            
-            balance_details = ""
-            for asset, balance_info in balances.items():
-                if balance_info['total'] > 0.0001:
-                    if asset == 'USDT':
-                        balance_details += f"{asset}: {balance_info['total']:.2f}\n"
-                    else:
-                        balance_details += f"{asset}: {balance_info['total']:.6f}\n"
-            
-            message = f"📊 <b>تقرير أداء البوت المحسن</b>\n\n"
-            message += f"الرصيد الابتدائي: ${self.initial_balance:.2f}\n"
-            message += f"الرصيد الحالي: ${total_balance:.2f}\n"
-            message += f"الأرباح/الخسائر: ${profit_loss:.2f} ({profit_loss_percent:+.2f}%)\n"
-            message += f"الأوامر النشطة: {current_orders}/{self.MAX_ALGO_ORDERS}\n"
-            message += f"حالة الأوامر: {order_status}\n"
-            message += f"عتبة الشراء: {self.BASELINE_BUY_THRESHOLD}% (عادي) / {self.STRICT_BUY_THRESHOLD}% (مشدد)\n\n"
-            message += f"<b>تفاصيل الرصيد:</b>\n{balance_details}"
-            
-            if bnb_price:
-                message += f"\nسعر BNB الحالي: ${bnb_price:.4f}"
-            
-            report_12h = self.generate_12h_trading_report()
-            if 'total_trades' in report_12h and report_12h['total_trades'] > 0:
-                message += f"\n\n📈 <b>آخر 12 ساعة:</b>"
-                message += f"\nإجمالي الصفقات: {report_12h['total_trades']}"
-                message += f"\nصفقات شراء: {report_12h['buy_trades']} (${report_12h['total_buy_size']})"
-                message += f"\nصفقات بيع: {report_12h['sell_trades']} (${report_12h['total_sell_size']})"
-                message += f"\nنسبة النجاح: {report_12h['win_rate']:.1f}%"
-            
-            self.send_notification(message)
-            
-        except Exception as e:
-            error_msg = f"❌ خطأ في إرسال تقرير الأداء: {e}"
-            logger.error(error_msg)
-    
-    def send_daily_report(self):
-        """إرسال تقرير يومي شامل"""
-        try:
-            daily_report = self.generate_daily_performance_report()
-            
-            if 'error' in daily_report:
-                return
-            
-            performance = daily_report['performance']
-            signal_analysis = daily_report['signal_analysis']
-            recommendations = daily_report['recommendations']
-            
-            message = f"📅 <b>تقرير أداء يومي - {daily_report['date']}</b>\n\n"
-            message += f"💰 الرصيد الابتدائي: ${performance['daily_start_balance']:.2f}\n"
-            message += f"💰 الرصيد النهائي: ${performance['daily_end_balance']:.2f}\n"
-            message += f"📈 صافي الربح/الخسارة: ${performance['daily_pnl']:.2f} ({performance['daily_return']:+.2f}%)\n\n"
-            
-            message += f"📊 <b>أداء التداول:</b>\n"
-            message += f"• إجمالي الصفقات: {performance['total_trades']}\n"
-            message += f"• الصفقات الرابحة: {performance['winning_trades']}\n"
-            message += f"• الصفقات الخاسرة: {performance['losing_trades']}\n"
-            message += f"• نسبة النجاح: {performance['win_rate']:.1f}%\n"
-            message += f"• عامل الربحية: {performance['profit_factor']:.2f}\n\n"
-            
-            message += f"📈 <b>تحليل الإشارات:</b>\n"
-            message += f"• إشارات قوية: {signal_analysis['strong_signals']} ({signal_analysis['strong_win_rate']:.1f}% نجاح)\n"
-            message += f"• إشارات متوسطة: {signal_analysis['medium_signals']} ({signal_analysis['medium_win_rate']:.1f}% نجاح)\n"
-            message += f"• إشارات ضعيفة: {signal_analysis['weak_signals']} ({signal_analysis['weak_win_rate']:.1f}% نجاح)\n\n"
-            
-            message += f"⚙️ <b>إعدادات العتبات:</b>\n"
-            message += f"• شراء أساسي: {self.BASELINE_BUY_THRESHOLD}%\n"
-            message += f"• شراء مشدد: {self.STRICT_BUY_THRESHOLD}%\n"
-            message += f"• بيع: {self.SELL_THRESHOLD}%\n\n"
-            
-            message += f"💡 <b>توصيات:</b>\n"
-            for rec in recommendations:
-                message += f"• {rec}\n"
-            
-            self.send_notification(message)
-            
-            # إعادة تعيين إحصائيات اليوم
-            self.performance_analyzer.reset_daily_stats(performance['daily_end_balance'])
-            
-            
-        except Exception as e:
-            error_msg = f"❌ خطأ في إرسال التقرير اليومي: {e}"
-            logger.error(error_msg)
-    
-    def run(self):
-        flask_thread = threading.Thread(target=run_flask_app, daemon=True)
-        flask_thread.start()
-        
-        interval_minutes = 15
-        self.send_notification(
-            f"🚀 بدء تشغيل بوت تداول BNB المحسن\n\n"
-            f"سيعمل البوت على فحص السوق كل {interval_minutes} دقيقة\n"
-            f"نطاق حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\n"
-            f"عتبة الشراء الأساسية: {self.BASELINE_BUY_THRESHOLD}%\n"
-            f"عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%\n"
-            f"عتبة البيع: {self.SELL_THRESHOLD}%\n"
-            f"الحد الأقصى للأوامر: {self.MAX_ALGO_ORDERS}"
-        )
-        
-        self.send_performance_report()
-        
-        report_counter = 0
-        last_daily_report = datetime.now()
+        if self.notifier:
+            self.notifier.send_message(
+                f"🚀 <b>بدء التشغيل المستمر لبوت BNB</b>\n\n"
+                f"⏰ مدة الدورة: {cycle_minutes} دقائق\n"
+                f"💰 نطاق حجم الصفقة: ${self.MIN_TRADE_SIZE}-${self.MAX_TRADE_SIZE}\n"
+                f"📈 عتبة الشراء: {self.BASELINE_BUY_THRESHOLD}%\n"
+                f"🎯 عتبة الشراء المشددة: {self.STRICT_BUY_THRESHOLD}%\n"
+                f"📉 عتبة البيع: {self.SELL_THRESHOLD}%\n"
+                f"🌐 IP الخادم: {self.get_public_ip()}"
+            )
         
         while True:
             try:
-                trade_executed = self.execute_trade()
+                self.run_trading_cycle()
                 
-                report_counter += 1
-                if trade_executed or report_counter >= 4:
-                    self.send_performance_report()
-                    report_counter = 0
+                # انتظار حتى الدورة القادمة
+                logger.info(f"⏳ انتظار {cycle_minutes} دقائق للدورة القادمة...")
+                time.sleep(cycle_minutes * 60)
                 
-                # إرسال تقرير يومي في الساعة 23:59
-                current_time = datetime.now()
-                if current_time.hour == 23 and current_time.minute >= 59:
-                    if (current_time - last_daily_report).total_seconds() > 3600:
-                        self.send_daily_report()
-                        last_daily_report = current_time
-                
-                time.sleep(interval_minutes * 60)
-                
+            except KeyboardInterrupt:
+                logger.info("⏹️ تم إيقاف البوت بواسطة المستخدم")
+                if self.notifier:
+                    self.notifier.send_message("⏹️ <b>تم إيقاف بوت BNB يدوياً</b>")
+                break
             except Exception as e:
-                error_msg = f"❌ خطأ غير متوقع في التشغيل: {e}"
-                self.send_notification(error_msg)
+                error_msg = f"❌ خطأ غير متوقع في التشغيل المستمر: {e}"
                 logger.error(error_msg)
-                time.sleep(300)
+                if self.notifier:
+                    self.notifier.send_message(error_msg)
+                time.sleep(60)  # انتظار دقيقة قبل المحاولة مرة أخرى
 
-if __name__ == "__main__":
+def main():
+    """الدالة الرئيسية"""
     try:
-        print("🚀 بدء تشغيل بوت تداول BNB المحسن...")
-        print("=" * 60)
-        
+        # بدء خادم Flask في thread منفصل
         flask_thread = threading.Thread(target=run_flask_app, daemon=True)
         flask_thread.start()
-        print("🌐 خادم الويب يعمل على المنفذ 10000")
+        logger.info("🌐 تم بدء خادم Flask للرصد الصحي")
         
+        # تهيئة وتشغيل بوت التداول
         bot = BNB_Trading_Bot()
-        
-        if bot.test_connection():
-            print("✅ اختبار الاتصال ناجح!")
-            print("🎯 بدء التشغيل الفعلي للبوت...")
-            bot.run()
+        bot.run_continuous(cycle_minutes=15)
         
     except Exception as e:
-        logger.error(f"فشل تشغيل البوت: {e}")
-        print(f"❌ فشل تشغيل البوت: {e}")
+        logger.error(f"❌ خطأ في الدالة الرئيسية: {e}")
+        if 'bot' in locals() and bot.notifier:
+            bot.notifier.send_message(f"❌ <b>فشل تشغيل البوت:</b> {str(e)}")
+
+if __name__ == "__main__":
+    main()
