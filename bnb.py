@@ -409,6 +409,43 @@ class CryptoBot:
 
         return max(min(score, 100), -100)
 
+    def debug_current_signals(self):
+        """تصحيح مفصل للإشارات الحالية"""
+        try:
+            data = self.fetch_historical_data(self.symbol)
+            if data is None:
+                logger.error("لا توجد بيانات للتحليل")
+                return
+        
+            latest = data.iloc[-1]
+        
+            # سجل جميع البيانات المهمة
+            logger.info(f"=== تصحيح {self.symbol} ===")
+            logger.info(f"السعر الحالي: {latest['close']}")
+            logger.info(f"RSI: {latest['rsi']}")
+            logger.info(f"MACD: {latest['macd']}")
+            logger.info(f"EMA34: {latest['ema34']}")
+            logger.info(f"الحجم: {latest['vol_ratio']}")
+        
+            # حساب الإشارات مع التفصيل
+            buy_signal = self.calculate_signal_strength(data, 'buy')
+            sell_signal = self.calculate_signal_strength(data, 'sell')
+        
+            logger.info(f"إشارة الشراء النهائية: {buy_signal:.1f}%")
+            logger.info(f"إشارة البيع النهائية: {sell_signal:.1f}%")
+            logger.info(f"عتبة البيع: {self.SELL_THRESHOLD}%")
+        
+            # تحقق من المساهمات
+            logger.info(f"مساهمات الشراء: {self.last_buy_contributions}")
+            logger.info(f"مساهمات البيع: {self.last_sell_contributions}")
+        
+        except Exception as e:
+            logger.error(f"خطأ في التصحيح: {e}")
+
+    # استدعها فوراً في البوت الرئيسي
+    for symbol, bot_instance in bot.bots.items():
+        bot_instance.debug_current_signals()
+
     def calculate_ema_score(self, data, signal_type):
         """حساب درجة المتوسطات المتحركة بتدرج منطقي"""
         latest = data.iloc[-1]
@@ -1160,6 +1197,37 @@ def main():
         
         # إرسال رسالة بدء التشغيل
         bot.notifier.send_message("🚀 بدء تشغيل بوت التداول متعدد العملات مع نظام الإشعارات المحسن")
+        
+        # ⭐⭐⭐ إضافة الكود هنا ⭐⭐⭐
+        logger.info("انتظار 10 ثوانٍ لتهيئة البوت بالكامل...")
+        time.sleep(10)  # انتظر تهيئة كاملة
+
+        logger.info("بدء الفحص التفصيلي للإشارات...")
+
+        for symbol, bot_instance in bot.bots.items():
+            logger.info(f"الفحص التفصيلي لـ {symbol}")
+            
+            # أضف دالة التصحيح إذا لم تكن موجودة
+            if hasattr(bot_instance, 'debug_current_signals'):
+                bot_instance.debug_current_signals()
+            else:
+                logger.warning(f"دالة debug_current_signals غير موجودة في {symbol}")
+            
+            # فحص إضافي للإشارات
+            data = bot_instance.fetch_historical_data(symbol)
+            if data is not None:
+                buy_signal = bot_instance.calculate_signal_strength(data, 'buy')
+                sell_signal = bot_instance.calculate_signal_strength(data, 'sell')
+                
+                logger.info(f"النتيجة النهائية - {symbol}: شراء {buy_signal:.1f}%, بيع {sell_signal:.1f}%")
+                
+                # إرسال إشعار يدوي إذا كانت الإشارة قوية
+                if sell_signal > 20:
+                    message = f"🔍 إشارة بيع مكتشفة: {symbol} - قوة: {sell_signal:.1f}%"
+                    bot.notifier.send_message(message)
+                    logger.info(message)
+        
+        # ⭐⭐⭐ نهاية الإضافة ⭐⭐⭐
         
         last_hourly_check = datetime.now()
         last_trading_cycle = datetime.now()
