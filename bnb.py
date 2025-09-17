@@ -889,10 +889,11 @@ class MomentumHunterBot:
             # إرسال التقرير المفصل
             self.send_detailed_scan_report(opportunities, usdt_balance, scan_duration)
         
+            best_opportunity = None
             if opportunities:
                 best_opportunity = opportunities[0]
                 logger.info(f"أفضل فرصة: {best_opportunity['symbol']} - قوة: {best_opportunity['score']}/100")
-            
+    
                 if best_opportunity['score'] >= 70 and usdt_balance > 20:
                     self.execute_trade(best_opportunity)
         
