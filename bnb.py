@@ -784,30 +784,120 @@ class MomentumHunterBot:
         except Exception as e:
             logger.error(f"خطأ في تحويل {asset} إلى USDT: {e}")
             return False
+
+    def send_detailed_scan_report(self, opportunities, usdt_balance, scan_duration):
+        """إرسال تقرير مفصل عن دورة المسح إلى التلغرام"""
+        if not self.notifier or not opportunities:
+            return
     
+        try:
+            total_opportunities = len(opportunities)
+            best_opportunity = opportunities[0]
+            worst_opportunity = opportunities[-1] if total_opportunities > 1 else best_opportunity
+        
+            # تحضير الرسالة المفصلة
+            message = f"📊 <b>تقرير دورة المسح - البوت المتقدم</b>\n\n"
+        
+            # معلومات عامة
+            message += f"⏰ <b>مدة المسح:</b> {scan_duration:.1f} ثانية\n"
+            message += f"💼 <b>الرصيد المتاح:</b> ${usdt_balance:.2f}\n"
+            message += f"🎯 <b>عدد الفرص:</b> {total_opportunities} فرصة\n"
+            message += f"🔍 <b>عدد العملات الممسوحة:</b> {len(self.symbols)} عملة\n\n"
+        
+            # أفضل فرصة
+            message += f"🚀 <b>أفضل فرصة:</b>\n"
+            message += f"   • {best_opportunity['symbol']} - قوة: {best_opportunity['score']}/100\n"
+            message += f"   • السعر: ${best_opportunity['details']['current_price']:.4f}\n"
+            message += f"   • التغير: +{best_opportunity['details']['price_change_5candles']:.2f}%\n"
+            message += f"   • الحجم: {best_opportunity['details']['volume_ratio']:.1f}x\n"
+            message += f"   • RSI: {best_opportunity['details']['rsi']:.1f}\n"
+            message += f"   • الاتجاه: {best_opportunity['details']['trend']}\n\n"
+        
+            # أفضل 5 فرص
+            message += f"🏆 <b>أفضل 5 فرص:</b>\n"
+            for i, opp in enumerate(opportunities[:5]):
+                emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "🔸"
+                message += f"   {emoji} {opp['symbol']}: {opp['score']}/100 "
+                message += f"(Δ{opp['details']['price_change_5candles']:+.1f}%)\n"
+        
+            message += f"\n"
+        
+            # توزيع النقاط
+            score_distribution = {
+                "ممتاز (90+)": len([o for o in opportunities if o['score'] >= 90]),
+                "قوي (80-89)": len([o for o in opportunities if 80 <= o['score'] < 90]),
+                "جيد (70-79)": len([o for o in opportunities if 70 <= o['score'] < 80]),
+                "متوسط (60-69)": len([o for o in opportunities if 60 <= o['score'] < 70]),
+                "ضعيف (<60)": len([o for o in opportunities if o['score'] < 60])
+            }
+        
+            message += f"📈 <b>توزيع النقاط:</b>\n"
+            for category, count in score_distribution.items():
+                if count > 0:
+                    message += f"   • {category}: {count} فرصة\n"
+        
+            message += f"\n"
+        
+            # الصفقات النشطة
+            active_trades_count = len(self.active_trades)
+            if active_trades_count > 0:
+                message += f"📦 <b>الصفقات النشطة:</b> {active_trades_count}\n"
+                for symbol, trade in list(self.active_trades.items())[:3]:
+                    profit_pct = ((trade['entry_price'] - trade['entry_price']) / trade['entry_price']) * 100
+                    message += f"   • {symbol}: {profit_pct:+.1f}%\n"
+        
+            # إحصائيات الأداء
+            stats = self.get_performance_stats()
+            if stats and stats.get('total_trades', 0) > 0:
+                message += f"\n"
+                message += f"📊 <b>إحصائيات الأداء:</b>\n"
+                message += f"   • إجمالي الصفقات: {stats['total_trades']}\n"
+                message += f"   • نسبة النجاح: {stats['win_rate']}%\n"
+                message += f"   • صافي الربح: ${stats['total_profit']:.2f}\n"
+        
+            message += f"\n"
+            message += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+            # إرسال الرسالة
+            self.notifier.send_message(message, 'scan_report')
+        
+            logger.info(f"✅ تم إرسال تقرير المسح إلى التلغرام: {total_opportunities} فرصة")
+        
+        except Exception as e:
+            logger.error(f"❌ خطأ في إرسال تقرير المسح: {e}")
+
+    # ثم في run_scan_cycle أضف:
     def run_scan_cycle(self):
+        start_time = time.time()
         try:
             logger.info("🔍 بدء دورة المسح المتقدمة...")
-            
+        
             usdt_balance = self.auto_convert_stuck_assets()
             logger.info(f"🔸 الرصيد المتاح: {usdt_balance:.2f} USDT")
-            
+        
             opportunities = self.find_best_opportunities()
-            
+        
+            # حساب مدة المسح
+            scan_duration = time.time() - start_time
+        
+            # إرسال التقرير المفصل
+            self.send_detailed_scan_report(opportunities, usdt_balance, scan_duration)
+        
             if opportunities:
                 best_opportunity = opportunities[0]
                 logger.info(f"أفضل فرصة: {best_opportunity['symbol']} - قوة: {best_opportunity['score']}/100")
-                
+            
                 if best_opportunity['score'] >= 70 and usdt_balance > 20:
                     self.execute_trade(best_opportunity)
-            
+        
             self.manage_active_trades()
             self.health_monitor.check_connections()
-            
+        
             logger.info(f"✅ اكتملت دورة المسح. الفرص الموجودة: {len(opportunities)}")
-            
+        
         except Exception as e:
             logger.error(f"❌ خطأ في دورة المسح: {e}")
+    
     
     def get_performance_stats(self):
         return self.mongo_manager.get_performance_stats()
