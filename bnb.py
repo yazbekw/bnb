@@ -421,22 +421,15 @@ class MomentumHunterBot:
         except Exception as e:
             logger.error(f"خطأ في حساب زخم {symbol}: {e}")
             return 0, {}
-    
+            
     def find_best_opportunities(self):
         opportunities = []
-        processed = 0
-        batch_size = 50
     
         # استخدم threading للمعالجة المتوازية
         import concurrent.futures
     
         def process_symbol(symbol):
-            nonlocal processed
             try:
-                processed += 1
-                if processed % 20 == 0:
-                    logger.info(f"معالجة {processed}/{len(self.symbols)} عملة...")
-            
                 # الفحص السريع للحجم والسعر
                 ticker = self.safe_binance_request(self.client.get_ticker, symbol=symbol)
                 price_change = float(ticker['priceChangePercent'])
@@ -464,9 +457,15 @@ class MomentumHunterBot:
                 logger.error(f"خطأ في تحليل {symbol}: {e}")
             return None
     
-        # المعالجة المتوازية بـ 10 threads
+        # المعالجة المتوازية بـ 10 threads مع تتبع التقدم
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            results = list(executor.map(process_symbol, self.symbols))
+            results = []
+            future_to_symbol = {executor.submit(process_symbol, symbol): symbol for symbol in self.symbols}
+        
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_symbol)):
+                if (i + 1) % 20 == 0:
+                    logger.info(f"معالجة {i + 1}/{len(self.symbols)} عملة...")
+                results.append(future.result())
     
         # تجميع النتائج
         opportunities = [result for result in results if result is not None]
