@@ -274,15 +274,22 @@ class MomentumHunterBot:
 
     def get_all_trading_symbols(self):
         try:
-            # للاختبار السريع، استخدم قائمة محددة فقط
-            test_symbols = ["BTCUSDT", "ADAUSDT", "XRPUSDT", "DOTUSDT", "LINKUSDT", 
-                           "LTCUSDT", "BCHUSDT", "SOLUSDT", "DOGEUSDT", "MATICUSDT"]
-            logger.info(f"🔸 وضع الاختبار: {len(test_symbols)} عملة")
-            return test_symbols
+            # العملات المهمة من قائمتك + العملات الأساسية
+            important_symbols = [
+                "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
+                "MYXUSDT", "HYPEUSDT", "MNTUSDT", "ADAUSDT", "DOTUSDT",
+                "LINKUSDT", "LTCUSDT", "BCHUSDT", "DOGEUSDT", "MATICUSDT"
+            ]
+        
+            logger.info(f"🔸 استخدام القائمة المخصصة: {len(important_symbols)} عملة")
+            return important_symbols
         
         except Exception as e:
             logger.error(f"خطأ في جلب أزواج التداول: {e}")
-            return ["BTCUSDT", "ADAUSDT", "XRPUSDT"]
+            # العودة إلى القائمة الأساسية في حالة الخطأ
+            return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                    "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT"]
 
     def filter_low_volume_symbols(self, symbols, min_volume=1000000):
         """استبعاد العملات ذات حجم التداول المنخفض"""
