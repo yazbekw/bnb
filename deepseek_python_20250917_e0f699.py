@@ -467,79 +467,177 @@ class MomentumHunterBot:
         
         return opportunities
     
+    def calculate_position_size(self, opportunity, usdt_balance):
+        """
+        حساب حجم الصفقة المتدرج حسب قوة الفرصة واحتمال نجاحها
+        من 10% إلى 50% من رأس المال المتاح
+        """
+        try:
+            score = opportunity['score']
+            current_price = opportunity['details']['current_price']
+            atr = opportunity['details']['atr']
+        
+            # التدرج في نسبة المخاطرة حسب قوة الصفقة
+            if score >= 90:
+                risk_percentage = 0.50  # 50% - فرصة استثنائية
+                risk_level = "استثنائية 🚀"
+            elif score >= 80:
+                risk_percentage = 0.35  # 35% - فرصة قوية جداً
+                risk_level = "قوية جداً 💪"
+            elif score >= 70:
+                risk_percentage = 0.25  # 25% - فرصة جيدة
+                risk_level = "جيدة 👍"
+            elif score >= 60:
+                risk_percentage = 0.15  # 15% - فرصة متوسطة
+                risk_level = "متوسطة 🔄"
+            else:
+                risk_percentage = 0.10  # 10% - فرصة عادية
+                risk_level = "عادية ⚡"
+        
+            # حساب حجم الصفقة الأساسي
+            base_position_size = usdt_balance * risk_percentage
+        
+            # تعديل إضافي حسب قوة المؤشرات
+            adjustment_factor = 1.0
+        
+            # زيادة الحجم إذا كان الحجم قوي جداً
+            if opportunity['details']['volume_ratio'] >= 2.5:
+                adjustment_factor *= 1.2
+                risk_level += " + حجم قوي"
+        
+            # زيادة الحجم إذا كان الاتجاه قوي
+            if opportunity['details']['price_change_5candles'] >= 3.0:
+                adjustment_factor *= 1.15
+                risk_level += " + زخم قوي"
+        
+            # تقليل الحجم إذا كان ATR مرتفع (تقلبات عالية)
+            if opportunity['details']['atr_percent'] >= 2.0:
+                adjustment_factor *= 0.8
+                risk_level += " - تقلبات عالية"
+        
+            # تقليل الحجم إذا كان RSI مرتفع
+            if opportunity['details']['rsi'] >= 70:
+                adjustment_factor *= 0.9
+                risk_level += " - RSI مرتفع"
+        
+            # الحجم النهائي مع التعديلات
+            final_position_size = base_position_size * adjustment_factor
+        
+            # الحدود الدنيا والعليا
+            min_position = max(10, usdt_balance * 0.05)  # 5% كحد أدنى أو 10 USDT
+            max_position = min(usdt_balance * 0.5, final_position_size)  # لا تتجاوز 50%
+        
+            final_position_size = max(min_position, min(max_position, final_position_size))
+        
+            # معلومات التقرير
+            size_info = {
+                'size_usdt': final_position_size,
+                'risk_percentage': risk_percentage * 100,
+                'adjustment_factor': adjustment_factor,
+                'risk_level': risk_level,
+                'base_size': base_position_size,
+                'min_size': min_position,
+                'max_size': max_position
+            }
+        
+            logger.info(f"📊 حجم الصفقة لـ {opportunity['symbol']}: "
+                       f"${final_position_size:.2f} ({risk_percentage*100:.1f}%) - "
+                       f"التقييم: {risk_level}")
+        
+            return final_position_size, size_info
+        
+        except Exception as e:
+            logger.error(f"خطأ في حساب حجم الصفقة: {e}")
+            # العودة إلى قيمة افتراضية آمنة
+            default_size = min(usdt_balance * 0.15, 100)
+            return default_size, {'risk_level': 'افتراضي بسبب خطأ'}
+
+    #然后在 execute_trade 中使用:
     def execute_trade(self, opportunity):
         symbol = opportunity['symbol']
         current_price = opportunity['details']['current_price']
         atr = opportunity['details']['atr']
-        
+    
         try:
             if symbol in self.active_trades:
                 logger.info(f"تخطي {symbol} - صفقة نشطة موجودة")
                 return False
-            
+        
             balances = self.get_account_balance()
             usdt_balance = balances.get('USDT', {}).get('free', 0)
-            
+        
             if usdt_balance < 20:
                 logger.warning("رصيد USDT غير كافي")
                 return False
-            
-            # حساب حجم الصفقة بناء على ATR وإدارة المخاطر
-            stop_loss_price = current_price - (atr * 1.5)
-            risk_amount = min(self.risk_per_trade, usdt_balance * 0.1)
-            
-            position_size = risk_amount / (current_price - stop_loss_price)
-            
-            # التقريب
+        
+            # حساب حجم الصفقة المتدرج
+            position_size_usdt, size_info = self.calculate_position_size(opportunity, usdt_balance)
+        
+            # حساب الكمية بناء على السعر
+            quantity = position_size_usdt / current_price
+        
+            # التقريب حسب متطلبات Binance
             symbol_info = self.safe_binance_request(self.client.get_symbol_info, symbol=symbol)
             lot_size = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
             if lot_size:
                 step_size = float(lot_size['stepSize'])
-                position_size = round(position_size / step_size) * step_size
-            
+                quantity = round(quantity / step_size) * step_size
+        
+            # التاكد من أن الكمية لا تقل عن الحد الأدنى
+            min_qty = float(next((f['minQty'] for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), 0))
+            if quantity < min_qty:
+                logger.warning(f"الكمية {quantity} أقل من الحد الأدنى {min_qty} لـ {symbol}")
+                return False
+        
+            # حساب وقف الخسارة وأخذ الربح
+            stop_loss_price = current_price - (atr * 1.5)
+            take_profit_price = current_price + (2 * (current_price - stop_loss_price))
+        
             # تنفيذ الأمر
             order = self.safe_binance_request(self.client.order_market_buy,
-                                             symbol=symbol,
-                                             quantity=position_size)
-            
+                                         symbol=symbol,
+                                         quantity=quantity)
+        
             trade_data = {
                 'symbol': symbol,
                 'type': 'buy',
-                'quantity': position_size,
+                'quantity': quantity,
                 'entry_price': current_price,
-                'trade_size': position_size * current_price,
+                'trade_size': quantity * current_price,
                 'stop_loss': stop_loss_price,
-                'take_profit': current_price + (2 * (current_price - stop_loss_price)),
+                'take_profit': take_profit_price,
                 'atr': atr,
-                'initial_stop_loss': stop_loss_price,
+                'position_size_usdt': position_size_usdt,
+                'risk_percentage': size_info['risk_percentage'],
+                'risk_level': size_info['risk_level'],
                 'timestamp': datetime.now(),
                 'status': 'open',
-                'score': opportunity['score'],
-                'risk_amount': risk_amount
+                'score': opportunity['score']
             }
-            
+        
             self.active_trades[symbol] = trade_data
             self.mongo_manager.save_trade(trade_data)
-            
+        
             if self.notifier:
                 message = (
-                    f"🚀 <b>صفقة جديدة - الاستراتيجية المتطورة</b>\n\n"
+                    f"🚀 <b>صفقة جديدة - حجم متدرج</b>\n\n"
                     f"• العملة: {symbol}\n"
                     f"• السعر: ${current_price:.4f}\n"
-                    f"• الكمية: {position_size:.6f}\n"
-                    f"• الحجم: ${position_size * current_price:.2f}\n"
+                    f"• الكمية: {quantity:.6f}\n"
+                    f"• الحجم: ${quantity * current_price:.2f}\n"
                     f"• النتيجة: {opportunity['score']}/100\n"
+                    f"• مستوى المخاطرة: {size_info['risk_level']}\n"
+                    f"• نسبة المخاطرة: {size_info['risk_percentage']:.1f}%\n"
                     f"• وقف الخسارة: ${stop_loss_price:.4f}\n"
-                    f"• أخذ الربح: ${trade_data['take_profit']:.4f}\n"
-                    f"• المخاطرة: ${risk_amount:.2f}\n"
+                    f"• أخذ الربح: ${take_profit_price:.4f}\n"
                     f"• ATR: {opportunity['details']['atr_percent']}%\n\n"
                     f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 self.notifier.send_message(message, 'trade_execution')
-            
-            logger.info(f"✅ تم شراء {symbol} - المخاطرة: ${risk_amount:.2f}")
+        
+            logger.info(f"✅ تم شراء {symbol} - الحجم: ${position_size_usdt:.2f}")
             return True
-            
+        
         except Exception as e:
             logger.error(f"❌ خطأ في تنفيذ صفقة {symbol}: {e}")
             return False
