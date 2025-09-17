@@ -271,26 +271,45 @@ class MomentumHunterBot:
         self.last_scan_time = datetime.now()
         
         logger.info("✅ تم تهيئة بوت صائد الصاعدات بنجاح")
-    
+
     def get_all_trading_symbols(self):
         try:
             exchange_info = self.safe_binance_request(self.client.get_exchange_info)
             all_symbols = []
-            
+        
+            # استبعاد العملات المشغولة
+            excluded_symbols = ['BNBUSDT', 'ETHUSDT']
+        
             for symbol_info in exchange_info['symbols']:
                 symbol = symbol_info['symbol']
-                # التركيز على أزواج USDT فقط لتجنب التكرار
-                if symbol.endswith('USDT') and symbol_info['status'] == 'TRADING':
+                if (symbol.endswith('USDT') and 
+                    symbol_info['status'] == 'TRADING' and
+                    symbol not in excluded_symbols):
                     all_symbols.append(symbol)
-            
-            logger.info(f"تم جلب {len(all_symbols)} زوج تداول متاح")
-            return all_symbols
-            
+        
+            # الحصول على أحجام التداول واستبعاد العملات ذات الحجم المنخفض
+            filtered_symbols = self.filter_low_volume_symbols(all_symbols)
+        
+            logger.info(f"تم جلب {len(filtered_symbols)} زوج تداول بعد التصفية")
+            return filtered_symbols
+        
         except Exception as e:
             logger.error(f"خطأ في جلب أزواج التداول: {e}")
-            # العودة إلى القائمة الأساسية في حالة الخطأ
-            return ["BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", 
-                   "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT", "SOLUSDT"]
+            return ["BTCUSDT", "ADAUSDT", "XRPUSDT", "DOTUSDT", "LINKUSDT", 
+                   "LTCUSDT", "BCHUSDT", "SOLUSDT", "DOGEUSDT", "MATICUSDT"]
+
+    def filter_low_volume_symbols(self, symbols, min_volume=1000000):
+        """استبعاد العملات ذات حجم التداول المنخفض"""
+        filtered = []
+        for symbol in symbols:
+            try:
+                ticker = self.safe_binance_request(self.client.get_ticker, symbol=symbol)
+                volume = float(ticker['volume']) * float(ticker['lastPrice'])
+                if volume >= min_volume:
+                    filtered.append(symbol)
+            except:
+                continue
+        return filtered
         
     def safe_binance_request(self, func, *args, **kwargs):
         return self.request_manager.safe_request(func, *args, **kwargs)
@@ -406,47 +425,52 @@ class MomentumHunterBot:
     def find_best_opportunities(self):
         opportunities = []
         processed = 0
-        batch_size = 50  # معالجة 50 عملة في كل مرة لتجنب الضغط على API
-        
-        for i in range(0, len(self.symbols), batch_size):
-            batch = self.symbols[i:i + batch_size]
+        batch_size = 50
+    
+        # استخدم threading للمعالجة المتوازية
+        import concurrent.futures
+    
+        def process_symbol(symbol):
+            nonlocal processed
+            try:
+                processed += 1
+                if processed % 20 == 0:
+                    logger.info(f"معالجة {processed}/{len(self.symbols)} عملة...")
             
-            for symbol in batch:
-                try:
-                    processed += 1
-                    if processed % 10 == 0:
-                        logger.info(f"معالجة {processed}/{len(self.symbols)} عملة...")
-                    
-                    # الفحص السريع للحجم والسعر
-                    ticker = self.safe_binance_request(self.client.get_ticker, symbol=symbol)
-                    price_change = float(ticker['priceChangePercent'])
-                    volume = float(ticker['volume']) * float(ticker['lastPrice'])
-                    
-                    if volume < self.min_volume or abs(price_change) < self.min_momentum:
-                        continue
-                    
-                    # التحليل العميق
-                    momentum_score, details = self.calculate_momentum_score(symbol)
-                    
-                    if momentum_score >= 60:  # عتبة الزخم
-                        opportunity = {
-                            'symbol': symbol,
-                            'score': round(momentum_score, 2),
-                            'price_change': details['price_change'],
-                            'volume_ratio': details['volume_ratio'],
-                            'rsi': details['rsi'],
-                            'current_price': details['current_price'],
-                            'volume_usd': volume,
-                            'timestamp': datetime.now()
-                        }
-                        
-                        opportunities.append(opportunity)
-                        self.mongo_manager.save_opportunity(opportunity)
-                        
-                except Exception as e:
-                    logger.error(f"خطأ في تحليل {symbol}: {e}")
-                    continue
-        
+                # الفحص السريع للحجم والسعر
+                ticker = self.safe_binance_request(self.client.get_ticker, symbol=symbol)
+                price_change = float(ticker['priceChangePercent'])
+                volume = float(ticker['volume']) * float(ticker['lastPrice'])
+            
+                if volume < self.min_volume or abs(price_change) < self.min_momentum:
+                    return None
+            
+                # التحليل العميق
+                momentum_score, details = self.calculate_momentum_score(symbol)
+            
+                if momentum_score >= 60:
+                    return {
+                        'symbol': symbol,
+                        'score': round(momentum_score, 2),
+                        'price_change': details['price_change'],
+                        'volume_ratio': details['volume_ratio'],
+                        'rsi': details['rsi'],
+                        'current_price': details['current_price'],
+                        'volume_usd': volume,
+                        'timestamp': datetime.now()
+                    }
+                
+            except Exception as e:
+                logger.error(f"خطأ في تحليل {symbol}: {e}")
+            return None
+    
+        # المعالجة المتوازية بـ 10 threads
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(process_symbol, self.symbols))
+    
+        # تجميع النتائج
+        opportunities = [result for result in results if result is not None]
+    
         # ترتيب الفرص من الأفضل إلى الأسوأ
         opportunities.sort(key=lambda x: x['score'], reverse=True)
         return opportunities
