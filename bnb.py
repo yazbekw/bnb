@@ -787,14 +787,6 @@ class MomentumHunterBot:
         """إرسال تقرير مفصل عن دورة المسح إلى التلغرام"""
         if not self.notifier or not opportunities:
             return
-
-        volume_ratio = best_opportunity['details'].get('volume_ratio', 0)
-        if volume_ratio == 0:
-            volume_display = "1.0x"  # قيمة افتراضية
-        else:
-            volume_display = f"{volume_ratio:.1f}x"
-    
-        message += f"   • الحجم: {volume_display}\n"
     
         try:
             total_opportunities = len(opportunities)
@@ -815,10 +807,19 @@ class MomentumHunterBot:
             message += f"   • {best_opportunity['symbol']} - قوة: {best_opportunity['score']}/100\n"
             message += f"   • السعر: ${best_opportunity['details']['current_price']:.4f}\n"
             message += f"   • التغير: +{best_opportunity['details']['price_change_5candles']:.2f}%\n"
-            message += f"   • الحجم: {best_opportunity['details']['volume_ratio']:.1f}x\n"
+        
+            # إصلاح عرض الحجم - بعد تعريف best_opportunity
+            volume_ratio = best_opportunity['details'].get('volume_ratio', 0)
+            if volume_ratio == 0:
+                volume_display = "1.0x"
+            else:
+                volume_display = f"{volume_ratio:.1f}x"
+        
+            message += f"   • الحجم: {volume_display}\n"
             message += f"   • RSI: {best_opportunity['details']['rsi']:.1f}\n"
             message += f"   • الاتجاه: {best_opportunity['details']['trend']}\n\n"
         
+
             # أفضل 5 فرص
             message += f"🏆 <b>أفضل 5 فرص:</b>\n"
             for i, opp in enumerate(opportunities[:5]):
