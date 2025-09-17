@@ -274,29 +274,15 @@ class MomentumHunterBot:
 
     def get_all_trading_symbols(self):
         try:
-            exchange_info = self.safe_binance_request(self.client.get_exchange_info)
-            all_symbols = []
-        
-            # استبعاد العملات المشغولة
-            excluded_symbols = ['BNBUSDT', 'ETHUSDT']
-        
-            for symbol_info in exchange_info['symbols']:
-                symbol = symbol_info['symbol']
-                if (symbol.endswith('USDT') and 
-                    symbol_info['status'] == 'TRADING' and
-                    symbol not in excluded_symbols):
-                    all_symbols.append(symbol)
-        
-            # الحصول على أحجام التداول واستبعاد العملات ذات الحجم المنخفض
-            filtered_symbols = self.filter_low_volume_symbols(all_symbols)
-        
-            logger.info(f"تم جلب {len(filtered_symbols)} زوج تداول بعد التصفية")
-            return filtered_symbols
+            # للاختبار السريع، استخدم قائمة محددة فقط
+            test_symbols = ["BTCUSDT", "ADAUSDT", "XRPUSDT", "DOTUSDT", "LINKUSDT", 
+                           "LTCUSDT", "BCHUSDT", "SOLUSDT", "DOGEUSDT", "MATICUSDT"]
+            logger.info(f"🔸 وضع الاختبار: {len(test_symbols)} عملة")
+            return test_symbols
         
         except Exception as e:
             logger.error(f"خطأ في جلب أزواج التداول: {e}")
-            return ["BTCUSDT", "ADAUSDT", "XRPUSDT", "DOTUSDT", "LINKUSDT", 
-                   "LTCUSDT", "BCHUSDT", "SOLUSDT", "DOGEUSDT", "MATICUSDT"]
+            return ["BTCUSDT", "ADAUSDT", "XRPUSDT"]
 
     def filter_low_volume_symbols(self, symbols, min_volume=1000000):
         """استبعاد العملات ذات حجم التداول المنخفض"""
@@ -665,6 +651,15 @@ class MomentumHunterBot:
     def run_scan_cycle(self):
         try:
             logger.info("🔍 بدء دورة المسح للصاعدات...")
+
+            logger.info("🔸 جلب العملات...")
+            self.symbols = self.get_all_trading_symbols()
+            logger.info(f"🔸 عدد الأزواج: {len(self.symbols)}")
+        
+            # نقطة تفتيش 2
+            logger.info("🔸 تحويل الأصول الراكدة...")
+            usdt_balance = self.auto_convert_stuck_assets()
+            logger.info(f"🔸 الرصيد المتاح: {usdt_balance} USDT")
             
             # جلب جميع أزواج التداول المتاحة
             self.symbols = self.get_all_trading_symbols()
