@@ -274,12 +274,12 @@ class MomentumHunterBot:
 
     def get_all_trading_symbols(self):
         try:
-            # العملات المهمة من قائمتك + العملات الأساسية
+            # العملات المهمة من قائمتك + العملات الأساسية (برموز Binance الصحيحة)
             important_symbols = [
                 "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
                 "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
-                "MYXUSDT", "HYPEUSDT", "MNTUSDT", "ADAUSDT", "DOTUSDT",
-                "LINKUSDT", "LTCUSDT", "BCHUSDT", "DOGEUSDT", "MATICUSDT"
+                "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
+                "DOGEUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT"
             ]
         
             logger.info(f"🔸 استخدام القائمة المخصصة: {len(important_symbols)} عملة")
@@ -290,7 +290,7 @@ class MomentumHunterBot:
             # العودة إلى القائمة الأساسية في حالة الخطأ
             return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
                     "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT"]
-
+    
     def filter_low_volume_symbols(self, symbols, min_volume=1000000):
         """استبعاد العملات ذات حجم التداول المنخفض"""
         filtered = []
