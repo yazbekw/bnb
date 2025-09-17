@@ -276,10 +276,53 @@ class MomentumHunterBot:
         try:
             # العملات المهمة من قائمتك + العملات الأساسية (برموز Binance الصحيحة)
             important_symbols = [
-                "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-                "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
-                "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
-                "DOGEUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT"
+                # العملات الرئيسية من قائمتك
+                "BTCUSDT",    # Bitcoin
+                "ETHUSDT",    # Ethereum  
+                "SOLUSDT",    # Solana
+                "BNBUSDT",    # BNB
+                "XRPUSDT",    # XRP
+                "AVAXUSDT",   # Avalanche
+                "XLMUSDT",    # Stellar
+                "SUIUSDT",    # Sui
+                "TONUSDT",    # Toncoin
+                "WLDUSDT",    # Worldcoin
+            
+                # العملات الإضافية المهمة
+                "ADAUSDT",    # Cardano
+                "DOTUSDT",    # Polkadot
+                "LINKUSDT",   # Chainlink
+                "LTCUSDT",    # Litecoin
+                "BCHUSDT",    # Bitcoin Cash
+                "DOGEUSDT",   # Dogecoin
+                "MATICUSDT",  # Polygon
+                "ATOMUSDT",   # Cosmos
+                "NEARUSDT",   # Near Protocol
+                "FILUSDT",    # Filecoin
+            
+                # بدائل للعملات المذكورة (برموز Binance الصحيحة)
+                "INJUSDT",    # Injective Protocol (بديل HYPE)
+                "APTUSDT",    # Aptos (بديل MNT)
+                "ARBUSDT",    # Arbitrum
+                "OPUSDT",     # Optimism
+                "MANAUSDT",   # Decentraland (بديل MYX)
+                "SANDUSDT",   # The Sandbox
+                "APEUSDT",    # ApeCoin
+                "RUNEUSDT",   # THORChain
+                "SEIUSDT",    # Sei Network
+                "TIAUSDT",    # Celestia
+            
+                # عملات إضافية ذات حجم تداول عالي
+                "ETCUSDT",    # Ethereum Classic
+                "XMRUSDT",    # Monero
+                "EOSUSDT",    # EOS
+                "AAVEUSDT",   # Aave
+                "UNIUSDT",    # Uniswap
+                "ALGOUSDT",   # Algorand
+                "XTZUSDT",    # Tezos
+                "VETUSDT",    # VeChain
+                "THETAUSDT",  # Theta Network
+                "EGLDUSDT"    # Elrond
             ]
         
             logger.info(f"🔸 استخدام القائمة المخصصة: {len(important_symbols)} عملة")
@@ -288,8 +331,12 @@ class MomentumHunterBot:
         except Exception as e:
             logger.error(f"خطأ في جلب أزواج التداول: {e}")
             # العودة إلى القائمة الأساسية في حالة الخطأ
-            return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-                    "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT"]
+            return [
+                "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
+                "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "DOGEUSDT",
+                "MATICUSDT", "ATOMUSDT", "NEARUSDT", "INJUSDT", "APTUSDT"
+            ]
     
     def filter_low_volume_symbols(self, symbols, min_volume=1000000):
         """استبعاد العملات ذات حجم التداول المنخفض"""
