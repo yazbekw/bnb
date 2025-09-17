@@ -177,7 +177,7 @@ class MongoManager:
     
     def get_performance_stats(self):
         try:
-            if not self.db:
+            if self.db is None:
                 return {}
             collection = self.db['trades']
             stats = collection.aggregate([
@@ -408,10 +408,7 @@ class MomentumHunterBot:
                 score += 20
             
             # 4. حجم التداول (15 نقطة)
-            volume_ratio = latest['volume'] / latest['volume_ma'] if latest['volume_ma'] > 0 else 1
-            details['volume_ratio'] = round(volume_ratio, 2)
-            if volume_ratio >= 1.8:
-                score += 15
+            volume_ratio = latest['volume'] / latest['volume_ma'] if latest['volume_ma'] > 0 and latest['volume_ma'] is not None else 1
             
             # 5. RSI (10 نقطة)
             details['rsi'] = round(latest['rsi'], 2)
@@ -583,6 +580,7 @@ class MomentumHunterBot:
         symbol = opportunity['symbol']
         current_price = opportunity['details']['current_price']
         atr = opportunity['details']['atr']
+        quantity = 0
 
         precision_info = self.get_symbol_precision(symbol)
         step_size = precision_info['step_size']
@@ -789,6 +787,14 @@ class MomentumHunterBot:
         """إرسال تقرير مفصل عن دورة المسح إلى التلغرام"""
         if not self.notifier or not opportunities:
             return
+
+        volume_ratio = best_opportunity['details'].get('volume_ratio', 0)
+        if volume_ratio == 0:
+            volume_display = "1.0x"  # قيمة افتراضية
+        else:
+            volume_display = f"{volume_ratio:.1f}x"
+    
+        message += f"   • الحجم: {volume_display}\n"
     
         try:
             total_opportunities = len(opportunities)
