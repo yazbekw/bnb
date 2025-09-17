@@ -552,11 +552,44 @@ class MomentumHunterBot:
             default_size = min(usdt_balance * 0.15, 100)
             return default_size, {'risk_level': 'افتراضي بسبب خطأ'}
 
+    def get_symbol_precision(self, symbol):
+        """الحصول على دقة الكمية والسعر للزوج"""
+        try:
+            symbol_info = self.safe_binance_request(self.client.get_symbol_info, symbol=symbol)
+        
+            # دقة الكمية
+            lot_size = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
+            step_size = float(lot_size['stepSize']) if lot_size else 0.001
+            qty_precision = len(str(step_size).split('.')[1]) if '.' in str(step_size) else 0
+        
+            # دقة السعر
+            price_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'PRICE_FILTER'), None)
+            tick_size = float(price_filter['tickSize']) if price_filter else 0.01
+            price_precision = len(str(tick_size).split('.')[1]) if '.' in str(tick_size) else 0
+        
+            return {
+                'quantity_precision': qty_precision,
+                'price_precision': price_precision,
+                'step_size': step_size,
+                'tick_size': tick_size
+            }
+        
+        except Exception as e:
+            logger.error(f"خطأ في获取 دقة {symbol}: {e}")
+            return {'quantity_precision': 6, 'price_precision': 2, 'step_size': 0.001, 'tick_size': 0.01}
+    
     #然后在 execute_trade 中使用:
     def execute_trade(self, opportunity):
         symbol = opportunity['symbol']
         current_price = opportunity['details']['current_price']
         atr = opportunity['details']['atr']
+
+        precision_info = self.get_symbol_precision(symbol)
+        step_size = precision_info['step_size']
+    
+        # التقريب الصحيح
+        quantity = (quantity // step_size) * step_size
+        quantity = round(quantity, precision_info['quantity_precision'])
     
         try:
             if symbol in self.active_trades:
