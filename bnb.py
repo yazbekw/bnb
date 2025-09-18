@@ -276,6 +276,7 @@ class MomentumHunterBot:
         self.max_trade_size = 50  # الحد الأقصى للصفقة 50 دولار
         self.risk_per_trade = 2.0  # 2% مخاطرة لكل صفقة
         self.max_position_size = 0.35  # 15% من الرصيد كحد أقصى
+        self.momentum_score_threshold = 60
         
         self.active_trades = {}
         self.last_scan_time = datetime.now()
@@ -513,20 +514,22 @@ class MomentumHunterBot:
     
     def find_best_opportunities(self):
         opportunities = []
-        
+        rejected_symbols = []  # أضف هذا لتتبع العملات المرفوضة
+    
         def process_symbol(symbol):
             try:
                 # الفحص السريع للحجم اليومي
                 ticker = self.safe_binance_request(self.client.get_ticker, symbol=symbol)
                 daily_volume = float(ticker['volume']) * float(ticker['lastPrice'])
-                
+            
                 if daily_volume < self.min_daily_volume:
+                    rejected_symbols.append({'symbol': symbol, 'reason': f'حجم غير كافي: {daily_volume:,.0f}'})
                     return None
-                
+            
                 # التحليل التقني المتقدم
                 momentum_score, details = self.calculate_momentum_score(symbol)
-                
-                if momentum_score >= 75:  # زيادة الحد الأدنى إلى 75 نقطة
+            
+                if momentum_score >= self.momentum_score_threshold:
                     opportunity = {
                         'symbol': symbol,
                         'score': momentum_score,
@@ -535,18 +538,27 @@ class MomentumHunterBot:
                         'timestamp': datetime.now()
                     }
                     return opportunity
-                    
+                else:
+                    rejected_symbols.append({'symbol': symbol, 'reason': f'نقاط غير كافية: {momentum_score}'})
+                    return None
+                
             except Exception as e:
                 logger.error(f"خطأ في تحليل {symbol}: {e}")
-            return None
-        
+                return None
+    
         # المعالجة المتوازية
         with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
             results = list(executor.map(process_symbol, self.symbols))
-        
+    
         opportunities = [result for result in results if result is not None]
         opportunities.sort(key=lambda x: x['score'], reverse=True)
-        
+    
+        # سجل العملات المرفوضة لأغراض debugging
+        if rejected_symbols and not opportunities:
+            top_rejected = sorted([r for r in rejected_symbols if 'نقاط' in r['reason']], 
+                                 key=lambda x: float(x['reason'].split(': ')[1]), reverse=True)[:5]
+            logger.info(f"🔍 تم رفض {len(rejected_symbols)} عملة. أفضل العملات المرفوضة: {top_rejected}")
+    
         return opportunities
     
     def calculate_position_size(self, opportunity, usdt_balance):
@@ -559,17 +571,17 @@ class MomentumHunterBot:
             atr = opportunity['details']['atr']
         
             # تحديد حجم الصفقة حسب النتيجة
-            if score >= 90:
-                position_size_usdt = 50  # 50 دولار للصفقات الاستثنائية
+            if score >= 80:  # من 90 إلى 80
+                position_size_usdt = 50
                 risk_level = "استثنائية 🚀"
-            elif score >= 85:
-                position_size_usdt = 45  # 45 دولار
+            elif score >= 70:  # من 85 إلى 70
+                position_size_usdt = 45
                 risk_level = "قوية جداً 💪"
-            elif score >= 80:
-                position_size_usdt = 40  # 40 دولار
+            elif score >= 65:  # من 80 إلى 65
+                position_size_usdt = 40
                 risk_level = "قوية 👍"
-            elif score >= 75:
-                position_size_usdt = 35  # 35 دولار
+            elif score >= 60:  # من 75 إلى 60
+                position_size_usdt = 35
                 risk_level = "جيدة 🔄"
             else:
                 return 0, {'risk_level': 'ضعيفة - لا تتداول'}
