@@ -271,11 +271,11 @@ class MomentumHunterBot:
         # إعدادات التداول المعدلة
         self.symbols = self.get_all_trading_symbols()
         self.stable_coins = ['USDT', 'BUSD', 'USDC']
-        self.min_daily_volume = 5000000  # 5M USD حجم يومي
+        self.min_daily_volume = 1000000  # 5M USD حجم يومي
         self.min_trade_size = 20  # الحد الأدنى للصفقة 20 دولار
         self.max_trade_size = 50  # الحد الأقصى للصفقة 50 دولار
         self.risk_per_trade = 2.0  # 2% مخاطرة لكل صفقة
-        self.max_position_size = 0.15  # 15% من الرصيد كحد أقصى
+        self.max_position_size = 0.35  # 15% من الرصيد كحد أقصى
         
         self.active_trades = {}
         self.last_scan_time = datetime.now()
