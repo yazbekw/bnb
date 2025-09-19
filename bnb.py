@@ -766,13 +766,13 @@ class MomentumHunterBot:
                 if not ticker:
                     return None
                 daily_volume = float(ticker['volume']) * float(ticker['lastPrice'])
-        
+    
                 if daily_volume < self.min_daily_volume:
                     rejected_symbols.append({'symbol': symbol, 'reason': f'حجم غير كافي: {daily_volume:,.0f}'})
                     return None
-        
+    
                 momentum_score, details = self.calculate_momentum_score(symbol)
-        
+    
                 if momentum_score >= self.momentum_score_threshold:
                     opportunity = {
                         'symbol': symbol,
@@ -785,24 +785,30 @@ class MomentumHunterBot:
                 else:
                     rejected_symbols.append({'symbol': symbol, 'reason': f'نقاط غير كافية: {momentum_score}'})
                     return None
-            
+        
             except Exception as e:
                 logger.error(f"خطأ في تحليل {symbol}: {e}")
                 return None
 
-    for symbol in symbols_to_analyze:
-        result = await process_symbol(symbol)
-        if result:
-            opportunities.append(result)
+        # Process symbols concurrently
+        async with aiohttp.ClientSession() as session:
+            tasks = [process_symbol(symbol) for symbol in symbols_to_analyze]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Error processing symbol: {result}")
+                elif result is not None:
+                    opportunities.append(result)
 
-    opportunities.sort(key=lambda x: x['score'], reverse=True)
+        opportunities.sort(key=lambda x: x['score'], reverse=True)
 
-    if rejected_symbols and not opportunities:
-        top_rejected = sorted([r for r in rejected_symbols if 'نقاط' in r['reason']], 
-                             key=lambda x: float(x['reason'].split(': ')[1]), reverse=True)[:5]
-        logger.info(f"🔍 تم رفض {len(rejected_symbols)} عملة. أفضل العملات المرفوضة: {top_rejected}")
+        if rejected_symbols and not opportunities:
+            top_rejected = sorted([r for r in rejected_symbols if 'نقاط' in r['reason']], 
+                                 key=lambda x: float(x['reason'].split(': ')[1]), reverse=True)[:5]
+            logger.info(f"🔍 تم رفض {len(rejected_symbols)} عملة. أفضل العملات المرفوضة: {top_rejected}")
 
-    return opportunities
+        return opportunities
     
     def check_correlation(self, symbol, active_symbols):
         if not active_symbols:
@@ -1218,28 +1224,28 @@ class MomentumHunterBot:
             self.notifier.send_message("🛑 <b>إيقاف البوت</b>", 'shutdown')
     
     # معدل: إعادة تدريب النموذج دوريًا
-
     def run_trading_cycle(self):
         try:
             logger.info("🔄 بدء دورة التداول الجديدة")
-        
+    
             if not self.health_monitor.check_connections():
                 logger.warning("⚠️ مشاكل في الاتصال - تأجيل الدورة")
                 return
-        
+    
             usdt_balance = self.auto_convert_stuck_assets()
-        
+    
             if usdt_balance < self.min_trade_size:
                 logger.warning(f"رصيد USDT غير كافي: {usdt_balance:.2f}")
                 return
-        
+    
             self.train_ml_model()  # إعادة تدريب نموذج XGBoost
-        
+    
             self.manage_active_trades()
-        
+    
             if len(self.active_trades) < 3:
-                opportunities = asyncio.run(self.find_best_opportunities())  # تعديل لاستدعاء الدالة الغير متزامنة
-            
+                # Use asyncio.run to call the async method
+                opportunities = asyncio.run(self.find_best_opportunities())
+        
                 if opportunities:
                     logger.info(f"🔍 تم العثور على {len(opportunities)} فرصة")
                     for opportunity in opportunities[:2]:
@@ -1250,10 +1256,10 @@ class MomentumHunterBot:
                     logger.info("🔍 لم يتم العثور على فرص مناسبة")
             else:
                 logger.info(f"⏸️ عدد الصفقات النشطة ({len(self.active_trades)}) - تخطي البحث عن فرص جديدة")
-        
+    
             self.last_scan_time = datetime.now(damascus_tz)
             logger.info(f"✅ اكتملت دورة التداول في {self.last_scan_time}")
-        
+    
         except Exception as e:
             logger.error(f"❌ خطأ في دورة التداول: {e}")
             if self.notifier:
