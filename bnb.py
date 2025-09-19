@@ -489,22 +489,7 @@ class MomentumHunterBot:
     def get_multiple_tickers(self, symbols):
         """واجهة متزامنة لجلب التيكرز"""
         try:
-            # محاولة الحصول على حلقة أحداث موجودة
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    return asyncio.run_coroutine_threadsafe(self.get_multiple_tickers_async(symbols), loop).result()
-                else:
-                    return asyncio.run(self.get_multiple_tickers_async(symbols))
-            except RuntimeError:
-                # إذا لم تكن هناك حلقة أحداث (مثل داخل ThreadPoolExecutor)، أنشئ واحدة جديدة
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    return loop.run_until_complete(self.get_multiple_tickers_async(symbols))
-                finally:
-                    asyncio.set_event_loop(None)  # إعادة تعيين الحلقة لتجنب المشكلات في الخيوط
-                    loop.close()
+            return asyncio.run(self.get_multiple_tickers_async(symbols))
         except Exception as e:
             logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
             return []
@@ -769,54 +754,55 @@ class MomentumHunterBot:
             logger.error(f"خطأ في حساب زخم {symbol}: {e}")
             return 0, {}
     
-    def find_best_opportunities(self):
+    async def find_best_opportunities(self):
         opportunities = []
         rejected_symbols = []
-        symbols_to_analyze = self.symbols[:100]  # تحليل أول 100 رمز فقط
+        symbols_to_analyze = self.symbols[:100]  # تحليل أول 100 رمز لتقليل الطلبات
 
-        def process_symbol(symbol):
+        async def process_symbol(symbol):
             try:
-                ticker = self.get_multiple_tickers([symbol])[0] if symbol in self.get_multiple_tickers([symbol]) else None
+                tickers = await self.get_multiple_tickers_async([symbol])
+                ticker = tickers[0] if tickers else None
                 if not ticker:
                     return None
                 daily_volume = float(ticker['volume']) * float(ticker['lastPrice'])
-
+        
                 if daily_volume < self.min_daily_volume:
                     rejected_symbols.append({'symbol': symbol, 'reason': f'حجم غير كافي: {daily_volume:,.0f}'})
                     return None
-
+        
                 momentum_score, details = self.calculate_momentum_score(symbol)
-
+        
                 if momentum_score >= self.momentum_score_threshold:
                     opportunity = {
                         'symbol': symbol,
                         'score': momentum_score,
                         'details': details,
                         'daily_volume': daily_volume,
-                        'timestamp': datetime.now()
+                        'timestamp': datetime.now(damascus_tz)
                     }
                     return opportunity
                 else:
                     rejected_symbols.append({'symbol': symbol, 'reason': f'نقاط غير كافية: {momentum_score}'})
                     return None
-
+            
             except Exception as e:
                 logger.error(f"خطأ في تحليل {symbol}: {e}")
                 return None
 
-        max_workers = min(10, os.cpu_count() or 4)  # تقليل عدد العمال
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(process_symbol, symbols_to_analyze))
+    for symbol in symbols_to_analyze:
+        result = await process_symbol(symbol)
+        if result:
+            opportunities.append(result)
 
-        opportunities = [result for result in results if result is not None]
-        opportunities.sort(key=lambda x: x['score'], reverse=True)
+    opportunities.sort(key=lambda x: x['score'], reverse=True)
 
-        if rejected_symbols and not opportunities:
-            top_rejected = sorted([r for r in rejected_symbols if 'نقاط' in r['reason']], 
+    if rejected_symbols and not opportunities:
+        top_rejected = sorted([r for r in rejected_symbols if 'نقاط' in r['reason']], 
                              key=lambda x: float(x['reason'].split(': ')[1]), reverse=True)[:5]
-            logger.info(f"🔍 تم رفض {len(rejected_symbols)} عملة. أفضل العملات المرفوضة: {top_rejected}")
+        logger.info(f"🔍 تم رفض {len(rejected_symbols)} عملة. أفضل العملات المرفوضة: {top_rejected}")
 
-        return opportunities
+    return opportunities
     
     def check_correlation(self, symbol, active_symbols):
         if not active_symbols:
@@ -1232,43 +1218,42 @@ class MomentumHunterBot:
             self.notifier.send_message("🛑 <b>إيقاف البوت</b>", 'shutdown')
     
     # معدل: إعادة تدريب النموذج دوريًا
+
     def run_trading_cycle(self):
         try:
             logger.info("🔄 بدء دورة التداول الجديدة")
-            
+        
             if not self.health_monitor.check_connections():
-                logger.warning("⚠️  مشاكل في الاتصال - تأجيل الدورة")
+                logger.warning("⚠️ مشاكل في الاتصال - تأجيل الدورة")
                 return
-            
+        
             usdt_balance = self.auto_convert_stuck_assets()
-            
+        
             if usdt_balance < self.min_trade_size:
                 logger.warning(f"رصيد USDT غير كافي: {usdt_balance:.2f}")
                 return
-            
-            # جديد: إعادة تدريب نموذج XGBoost
-            self.train_ml_model()
-            
+        
+            self.train_ml_model()  # إعادة تدريب نموذج XGBoost
+        
             self.manage_active_trades()
-            
+        
             if len(self.active_trades) < 3:
-                opportunities = self.find_best_opportunities()
-                
+                opportunities = asyncio.run(self.find_best_opportunities())  # تعديل لاستدعاء الدالة الغير متزامنة
+            
                 if opportunities:
                     logger.info(f"🔍 تم العثور على {len(opportunities)} فرصة")
-                    
                     for opportunity in opportunities[:2]:
                         if opportunity['symbol'] not in self.active_trades:
-                            self.execute_trade(opportunity['symbol'], opportunity)  # معدل: تمرير الرمز والفرصة
+                            self.execute_trade(opportunity['symbol'], opportunity)
                             time.sleep(1)
                 else:
                     logger.info("🔍 لم يتم العثور على فرص مناسبة")
             else:
-                logger.info(f"⏸️  عدد الصفقات النشطة ({len(self.active_trades)}) - تخطي البحث عن فرص جديدة")
-            
-            self.last_scan_time = datetime.now()
+                logger.info(f"⏸️ عدد الصفقات النشطة ({len(self.active_trades)}) - تخطي البحث عن فرص جديدة")
+        
+            self.last_scan_time = datetime.now(damascus_tz)
             logger.info(f"✅ اكتملت دورة التداول في {self.last_scan_time}")
-            
+        
         except Exception as e:
             logger.error(f"❌ خطأ في دورة التداول: {e}")
             if self.notifier:
