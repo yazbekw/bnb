@@ -282,51 +282,122 @@ class MongoManager:
     def get_performance_stats(self):
         try:
             if self.db is None:
-                return {}
-            collection = self.db['trades']
-            stats = collection.aggregate([
-                {'$match': {'status': 'completed'}},
-                {'$group': {
-                    '_id': None,
-                    'total_trades': {'$sum': 1},
-                    'profitable_trades': {
-                        '$sum': {'$cond': [{'$gt': ['$profit_loss', 0]}, 1, 0]}
-                    },
-                    'total_profit': {
-                        '$sum': {'$cond': [{'$gt': ['$profit_loss', 0]}, '$profit_loss', 0]}
-                    },
-                    'total_loss': {
-                        '$sum': {'$cond': [{'$lt': ['$profit_loss', 0]}, '$profit_loss', 0]}
-                    }
-                }}
-            ])
+
+class MongoManager:
+    def __init__(self, connection_string=None):
+        self.connection_string = (connection_string or 
+                                 os.environ.get('MANGO_DB_CONNECTION_STRING') or
+                                 os.environ.get('MONGODB_URI') or
+                                 os.environ.get('DATABASE_URL'))
+        
+        if self.connection_string:
+            logger.info("✅ تم العثور على رابط MongoDB")
+        else:
+            logger.warning("❌ لم يتم العثور على رابط MongoDB")
             
-            result = list(stats)
-            if result:
-                stats_data = result[0]
-                win_rate = (stats_data['profitable_trades'] / stats_data['total_trades'] * 100) if stats_data['total_trades'] > 0 else 0
-                return {
-                    'total_trades': stats_data['total_trades'],
-                    'win_rate': round(win_rate, 2),
-                    'total_profit': round(stats_data['total_profit'], 2),
-                    'total_loss': round(abs(stats_data['total_loss']), 2),
-                    'profit_factor': round(stats_data['total_profit'] / abs(stats_data['total_loss']), 2) if stats_data['total_loss'] < 0 else float('inf')
-                }
-            return {}
+        self.client = None
+        self.db = None
+        self.connect(retries=5, delay=5)
+        
+    def connect(self, retries=3, delay=5):
+        for attempt in range(retries):
+            try:
+                self.client = MongoClient(self.connection_string, serverSelectionTimeoutMS=5000)
+                self.client.admin.command('ping')
+                self.db = self.client['momentum_hunter_bot']
+                self.initialize_db()
+                logger.info("✅ تم الاتصال بـ MongoDB بنجاح")
+                return True
+            except ConnectionFailure as e:
+                logger.error(f"❌ فشل الاتصال بـ MongoDB (محاولة {attempt+1}): {e}")
+                time.sleep(delay * (2 ** attempt))
+        return False
+    
+    def initialize_db(self):
+        if self.db is not None:  # معدل: استخدام is not None
+            self.db['trades'].create_index([('symbol', 1), ('status', 1)])
+            self.db['opportunities'].create_index([('scanned_at', 1)])
+    
+    def save_trade(self, trade_data):
+        try:
+            if self.db is not None:  # معدل: استخدام is not None
+                collection = self.db['trades']
+                trade_data['timestamp'] = datetime.now(damascus_tz)
+                result = collection.insert_one(trade_data)
+                return True
+            else:
+                logger.error("❌ قاعدة البيانات غير متصلة")
+                return False
+        except Exception as e:
+            logger.error(f"خطأ في حفظ الصفقة: {e}")
+            return False
+    
+    def save_opportunity(self, opportunity):
+        try:
+            if self.db is not None:  # معدل: استخدام is not None
+                collection = self.db['opportunities']
+                opportunity['scanned_at'] = datetime.now(damascus_tz)
+                collection.insert_one(opportunity)
+                return True
+            else:
+                logger.error("❌ قاعدة البيانات غير متصلة")
+                return False
+        except Exception as e:
+            logger.error(f"خطأ في حفظ الفرصة: {e}")
+            return False
+    
+    def get_performance_stats(self):
+        try:
+            if self.db is not None:  # معدل: استخدام is not None
+                collection = self.db['trades']
+                stats = collection.aggregate([
+                    {'$match': {'status': 'completed'}},
+                    {'$group': {
+                        '_id': None,
+                        'total_trades': {'$sum': 1},
+                        'profitable_trades': {
+                            '$sum': {'$cond': [{'$gt': ['$profit_loss', 0]}, 1, 0]}
+                        },
+                        'total_profit': {
+                            '$sum': {'$cond': [{'$gt': ['$profit_loss', 0]}, '$profit_loss', 0]}
+                        },
+                        'total_loss': {
+                            '$sum': {'$cond': [{'$lt': ['$profit_loss', 0]}, '$profit_loss', 0]}
+                        }
+                    }}
+                ])
+                
+                result = list(stats)
+                if result:
+                    stats_data = result[0]
+                    win_rate = (stats_data['profitable_trades'] / stats_data['total_trades'] * 100) if stats_data['total_trades'] > 0 else 0
+                    return {
+                        'total_trades': stats_data['total_trades'],
+                        'win_rate': round(win_rate, 2),
+                        'total_profit': round(stats_data['total_profit'], 2),
+                        'total_loss': round(abs(stats_data['total_loss']), 2),
+                        'profit_factor': round(stats_data['total_profit'] / abs(stats_data['total_loss']), 2) if stats_data['total_loss'] < 0 else float('inf')
+                    }
+                return {}
+            else:
+                logger.error("❌ قاعدة البيانات غير متصلة")
+                return {}
         except Exception as e:
             logger.error(f"خطأ في جلب الإحصائيات: {e}")
             return {}
 
     def update_trade_stop_loss(self, symbol, new_sl):
         try:
-            if not self.db:
+            if self.db is not None:  # معدل: استخدام is not None
+                collection = self.db['trades']
+                result = collection.update_one(
+                    {'symbol': symbol, 'status': 'open'},
+                    {'$set': {'stop_loss': new_sl}}
+                )
+                return result.modified_count > 0
+            else:
+                logger.error("❌ قاعدة البيانات غير متصلة")
                 return False
-            collection = self.db['trades']
-            result = collection.update_one(
-                {'symbol': symbol, 'status': 'open'},
-                {'$set': {'stop_loss': new_sl}}
-            )
-            return result.modified_count > 0
         except Exception as e:
             logger.error(f"خطأ في تحديث وقف الخسارة: {e}")
             return False
