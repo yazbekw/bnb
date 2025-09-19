@@ -17,6 +17,13 @@ from pymongo.errors import ConnectionFailure
 import schedule
 from flask import Flask, jsonify
 import concurrent.futures
+import pytz
+
+# ضبط توقيت الخادم إلى توقيت دمشق
+damascus_tz = pytz.timezone('Asia/Damascus')
+os.environ['TZ'] = 'Asia/Damascus'
+if hasattr(time, 'tzset'):
+    time.tzset()
 
 # تحميل متغيرات البيئة
 load_dotenv()
@@ -26,7 +33,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return {'status': 'healthy', 'service': 'momentum-hunter-bot', 'timestamp': datetime.now().isoformat()}
+    return {'status': 'healthy', 'service': 'momentum-hunter-bot', 'timestamp': datetime.now(damascus_tz).isoformat()}
 
 @app.route('/stats')
 def stats():
@@ -50,7 +57,7 @@ def run_flask_app():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
 
-# إعداد logging
+# إعداد logging مع تحسين الأداء
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -67,8 +74,34 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.last_notifications = {}
+        self.message_queue = []
+        self.sending = False
+        self.queue_lock = threading.Lock()
+        
+        # بدء thread معالجة الرسائل
+        self.process_thread = threading.Thread(target=self._process_message_queue, daemon=True)
+        self.process_thread.start()
     
-    def send_message(self, message, message_type='info'):
+    def _process_message_queue(self):
+        """معالجة طابور الرسائل بشكل منفصل لتجنب التأخير"""
+        while True:
+            try:
+                with self.queue_lock:
+                    if not self.message_queue:
+                        time.sleep(0.1)
+                        continue
+                    
+                    message_data = self.message_queue.pop(0)
+                
+                self._send_message_immediate(message_data['message'], message_data['message_type'])
+                time.sleep(0.5)  # تأخير بين الرسائل لتجنب rate limiting
+                
+            except Exception as e:
+                logger.error(f"خطأ في معالجة طابور الرسائل: {e}")
+                time.sleep(1)
+    
+    def _send_message_immediate(self, message, message_type='info'):
+        """إرسال الرسالة فورياً مع التحكم في التكرار"""
         try:
             current_time = time.time()
             if (message_type in self.last_notifications and 
@@ -91,6 +124,15 @@ class TelegramNotifier:
         except Exception as e:
             logger.error(f"خطأ في إرسال رسالة Telegram: {e}")
             return False
+    
+    def send_message(self, message, message_type='info'):
+        """إضافة الرسالة إلى الطابور لإرسالها لاحقاً"""
+        with self.queue_lock:
+            self.message_queue.append({
+                'message': message,
+                'message_type': message_type
+            })
+        return True
 
 class RequestManager:
     def __init__(self):
@@ -104,8 +146,8 @@ class RequestManager:
             current_time = time.time()
             elapsed = current_time - self.last_request_time
             
-            if elapsed < 0.5:
-                time.sleep(0.5 - elapsed)
+            if elapsed < 0.05:  # زيادة السرعة إلى 20 طلب/ثانية
+                time.sleep(0.05 - elapsed)
             
             if current_time - self.last_request_time >= 60:
                 self.request_count = 0
@@ -156,7 +198,7 @@ class MongoManager:
             if not self.db:
                 return False
             collection = self.db['trades']
-            trade_data['timestamp'] = datetime.now()
+            trade_data['timestamp'] = datetime.now(damascus_tz)
             result = collection.insert_one(trade_data)
             return True
         except Exception as e:
@@ -168,7 +210,7 @@ class MongoManager:
             if not self.db:
                 return False
             collection = self.db['opportunities']
-            opportunity['scanned_at'] = datetime.now()
+            opportunity['scanned_at'] = datetime.now(damascus_tz)
             collection.insert_one(opportunity)
             return True
         except Exception as e:
@@ -218,7 +260,7 @@ class HealthMonitor:
         self.bot = bot_instance
         self.error_count = 0
         self.max_errors = 10
-        self.last_health_check = datetime.now()
+        self.last_health_check = datetime.now(damascus_tz)
         
     def check_connections(self):
         try:
@@ -642,6 +684,56 @@ class MomentumHunterBot:
             logger.error(f"خطأ في获取 دقة {symbol}: {e}")
             return {'quantity_precision': 6, 'price_precision': 2, 'step_size': 0.001, 'tick_size': 0.01}
     
+
+    def manage_active_trades(self):
+        """إدارة الصفقات النشطة مع منع الإغلاق الفوري"""
+        for symbol, trade in list(self.active_trades.items()):
+            try:
+                # التحقق من عمر الصفقة - منع الإغلاق الفوري
+                trade_age = (datetime.now() - trade['timestamp']).total_seconds()
+                if trade_age < 60:  # انتظر 60 ثانية على الأقل قبل التحقق
+                    continue
+                
+                current_price = self.get_current_price(symbol)
+                if current_price is None:
+                    continue
+                
+                # حساب الربح/الخسارة مع الرسوم (تقريباً 0.1%)
+                estimated_fees = trade['trade_size'] * 0.001
+                net_pnl = ((current_price - trade['entry_price']) * trade['quantity']) - estimated_fees
+                net_pnl_percent = (net_pnl / trade['trade_size']) * 100
+                
+                # التحقق من وقف الخسارة المعدل مع هامش أمان
+                stop_loss_with_margin = trade['stop_loss'] * 0.995  # هامش 0.5% لمنع الإغلاق المبكر
+                if current_price <= stop_loss_with_margin:
+                    logger.info(f"🔻 وقف خسارة لـ {symbol}: {current_price:.4f} <= {stop_loss_with_margin:.4f}")
+                    self.close_trade(symbol, current_price, 'stop_loss')
+                    continue
+                
+                # التحقق من أخذ الربح مع هامش ربح صافي
+                if current_price >= trade['take_profit'] and net_pnl_percent >= 1.0:
+                    logger.info(f"✅ أخذ ربح لـ {symbol}: {current_price:.4f} >= {trade['take_profit']:.4f}")
+                    self.close_trade(symbol, current_price, 'take_profit')
+                    continue
+                
+                # Trailing Stop (بعد تحقيق 5% ربح صافي)
+                if net_pnl_percent >= 5.0:
+                    new_sl = max(trade['stop_loss'], current_price - (trade['atr'] * 1.5))
+                    if new_sl > trade['stop_loss']:
+                        trade['stop_loss'] = new_sl
+                        logger.info(f"📈 تم تحديث وقف الخسارة لـ {symbol} إلى ${new_sl:.4f}")
+                        # تحديث في قاعدة البيانات
+                        self.mongo_manager.update_trade_stop_loss(symbol, new_sl)
+                        
+                # إغلاق الصفقات التي لم تتحرك بعد فترة (فقط بعد وقت كافٍ)
+                trade_duration_hours = trade_age / 3600
+                if trade_duration_hours > 6 and net_pnl_percent < 0.5:  # 6 ساعات بدون حركة
+                    self.close_trade(symbol, current_price, 'timeout')
+                    continue
+                        
+            except Exception as e:
+                logger.error(f"خطأ في إدارة صفقة {symbol}: {e}")
+
     def execute_trade(self, opportunity):
         symbol = opportunity['symbol']
         current_price = opportunity['details']['current_price']
@@ -649,21 +741,21 @@ class MomentumHunterBot:
         
         try:
             if symbol in self.active_trades:
-                logger.info(f"تخطي {symbol} - صفقة نشطة موجودة")
+                logger.info(f"⏭️ تخطي {symbol} - صفقة نشطة موجودة")
                 return False
         
             balances = self.get_account_balance()
             usdt_balance = balances.get('USDT', {}).get('free', 0)
         
             if usdt_balance < self.min_trade_size:
-                logger.warning(f"رصيد USDT غير كافي: {usdt_balance:.2f} < {self.min_trade_size}")
+                logger.warning(f"💰 رصيد USDT غير كافي: {usdt_balance:.2f} < {self.min_trade_size}")
                 return False
         
             # حساب حجم الصفقة
             position_size_usdt, size_info = self.calculate_position_size(opportunity, usdt_balance)
             
             if position_size_usdt < self.min_trade_size:
-                logger.info(f"تخطي {symbol} - حجم الصفقة صغير: {position_size_usdt:.2f}")
+                logger.info(f"📉 تخطي {symbol} - حجم الصفقة صغير: {position_size_usdt:.2f}")
                 return False
         
             # حساب الكمية بناء على السعر
@@ -675,7 +767,7 @@ class MomentumHunterBot:
             quantity = (quantity // step_size) * step_size
             quantity = round(quantity, precision_info['quantity_precision'])
         
-            # التاكد من أن الكمية لا تقل عن الحد الأدنى
+            # التأكد من أن الكمية لا تقل عن الحد الأدنى
             symbol_info = self.safe_binance_request(self.client.get_symbol_info, symbol=symbol)
             if not symbol_info:
                 return False
@@ -684,12 +776,22 @@ class MomentumHunterBot:
             if lot_size:
                 min_qty = float(lot_size['minQty'])
                 if quantity < min_qty:
-                    logger.warning(f"الكمية {quantity} أقل من الحد الأدنى {min_qty} لـ {symbol}")
+                    logger.warning(f"⚖️ الكمية {quantity} أقل من الحد الأدنى {min_qty} لـ {symbol}")
                     return False
         
-            # حساب وقف الخسارة وأخذ الربح
-            stop_loss_price = current_price - (atr * 2.0)  # زيادة الهامش إلى 2 ATR
-            take_profit_price = current_price + (3.0 * (current_price - stop_loss_price))  # نسبة 3:1
+            # حساب وقف الخسارة وأخذ الربح بشكل أكثر تحفظاً
+            atr_multiplier = 2.5  # زيادة هامش الأمان
+            risk_reward_ratio = 3.0  # نسبة العائد إلى المخاطرة
+            
+            stop_loss_price = current_price - (atr * atr_multiplier)
+            take_profit_price = current_price + (risk_reward_ratio * (current_price - stop_loss_price))
+            
+            # التأكد من أن وقف الخسارة ليس قريباً جداً من سعر الدخول
+            min_sl_distance = current_price * 0.005  # 0.5% كحد أدنى
+            if (current_price - stop_loss_price) < min_sl_distance:
+                stop_loss_price = current_price - min_sl_distance
+                # إعادة حساب أخذ الربح بناء على وقف الخسارة الجديد
+                take_profit_price = current_price + (risk_reward_ratio * (current_price - stop_loss_price))
         
             # تنفيذ الأمر
             order = self.safe_binance_request(self.client.order_market_buy,
@@ -697,7 +799,7 @@ class MomentumHunterBot:
                                          quantity=quantity)
         
             if not order or order['status'] != 'FILLED':
-                logger.error(f"فشل تنفيذ أمر الشراء لـ {symbol}")
+                logger.error(f"❌ فشل تنفيذ أمر الشراء لـ {symbol}")
                 return False
                 
             # الحصول على سعر التنفيذ الفعلي
@@ -718,7 +820,8 @@ class MomentumHunterBot:
                 'timestamp': datetime.now(),
                 'status': 'open',
                 'score': opportunity['score'],
-                'order_id': order['orderId']
+                'order_id': order['orderId'],
+                'min_profit_threshold': self.min_profit_threshold
             }
         
             self.active_trades[symbol] = trade_data
@@ -736,57 +839,23 @@ class MomentumHunterBot:
                     f"• نسبة المخاطرة: {size_info.get('risk_percentage', 0):.1f}%\n"
                     f"• وقف الخسارة: ${stop_loss_price:.4f}\n"
                     f"• أخذ الربح: ${take_profit_price:.4f}\n"
-                    f"• نسبة العائد: 3:1\n"
-                    f"• ATR: {opportunity['details']['atr_percent']}%\n\n"
+                    f"• نسبة العائد: {risk_reward_ratio}:1\n"
+                    f"• ATR: {opportunity['details']['atr_percent']}%\n"
+                    f"• هامش الأمان: {atr_multiplier} ATR\n\n"
                     f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 self.notifier.send_message(message, 'trade_execution')
         
             logger.info(f"✅ تم شراء {symbol} - الحجم: ${position_size_usdt:.2f}")
+            
+            # انتظر قليلاً قبل الصفقة التالية
+            time.sleep(2)
             return True
         
         except Exception as e:
             logger.error(f"❌ خطأ في تنفيذ صفقة {symbol}: {e}")
             return False
-    
-    def manage_active_trades(self):
-        for symbol, trade in list(self.active_trades.items()):
-            try:
-                current_price = self.get_current_price(symbol)
-                if current_price is None:
-                    continue
-                
-                # حساب الربح/الخسارة مع الرسوم (تقريباً 0.1%)
-                estimated_fees = trade['trade_size'] * 0.001
-                net_pnl = ((current_price - trade['entry_price']) * trade['quantity']) - estimated_fees
-                net_pnl_percent = (net_pnl / trade['trade_size']) * 100
-                
-                # التحقق من وقف الخسارة المعدل
-                if current_price <= trade['stop_loss']:
-                    self.close_trade(symbol, current_price, 'stop_loss')
-                    continue
-                
-                # التحقق من أخذ الربح مع هامش ربح صافي
-                if current_price >= trade['take_profit'] and net_pnl_percent >= 1.0:
-                    self.close_trade(symbol, current_price, 'take_profit')
-                    continue
-                
-                # Trailing Stop (بعد تحقيق 5% ربح صافي)
-                if net_pnl_percent >= 5.0:
-                    new_sl = max(trade['stop_loss'], current_price - (trade['atr'] * 1.5))
-                    if new_sl > trade['stop_loss']:
-                        trade['stop_loss'] = new_sl
-                        logger.info(f"تم تحديث وقف الخسارة لـ {symbol} إلى ${new_sl:.4f}")
-                        
-                # إغلاق الصفقات التي لم تتحرك بعد فترة
-                trade_duration = (datetime.now() - trade['timestamp']).total_seconds() / 3600
-                if trade_duration > 4 and net_pnl_percent < 0.5:  # 4 ساعات بدون حركة
-                    self.close_trade(symbol, current_price, 'timeout')
-                    continue
-                        
-            except Exception as e:
-                logger.error(f"خطأ في إدارة صفقة {symbol}: {e}")
-    
+
     def close_trade(self, symbol, exit_price, reason):
         try:
             trade = self.active_trades[symbol]
@@ -796,6 +865,12 @@ class MomentumHunterBot:
             estimated_fees = trade['trade_size'] * 0.002  # 0.1% للشراء + 0.1% للبيع
             net_pnl = gross_pnl - estimated_fees
             pnl_percent = (net_pnl / trade['trade_size']) * 100
+            
+            # التأكد من أن الصفقة حققت الحد الأدنى من الربح/الخسارة
+            min_expected_pnl = trade['trade_size'] * trade.get('min_profit_threshold', 0.002)
+            if abs(net_pnl) < min_expected_pnl and reason != 'stop_loss':
+                logger.info(f"🔄 إلغاء إغلاق {symbol} - الربح/الخسارة أقل من الحد الأدنى")
+                return False
             
             trade['exit_price'] = exit_price
             trade['exit_time'] = datetime.now()
@@ -812,7 +887,7 @@ class MomentumHunterBot:
                 message = (
                     f"{emoji} <b>إغلاق الصفقة</b>\n\n"
                     f"• العملة: {symbol}\n"
-                    f"• السبب: {reason}\n"
+                    f"• السبب: {self.translate_exit_reason(reason)}\n"
                     f"• سعر الدخول: ${trade['entry_price']:.4f}\n"
                     f"• سعر الخروج: ${exit_price:.4f}\n"
                     f"• الربح/الخسارة: ${net_pnl:.2f} ({pnl_percent:+.2f}%)\n"
@@ -823,11 +898,23 @@ class MomentumHunterBot:
                 )
                 self.notifier.send_message(message, 'trade_close')
             
-            logger.info(f"تم إغلاق {symbol} بـ {reason}: ${net_pnl:.2f} ({pnl_percent:+.2f}%)")
+            logger.info(f"🔚 تم إغلاق {symbol} بـ {reason}: ${net_pnl:.2f} ({pnl_percent:+.2f}%)")
             del self.active_trades[symbol]
+            return True
             
         except Exception as e:
-            logger.error(f"خطأ في إغلاق صفقة {symbol}: {e}")
+            logger.error(f"❌ خطأ في إغلاق صفقة {symbol}: {e}")
+            return False
+
+    def translate_exit_reason(self, reason):
+        """ترجمة أسباب الإغلاق للعربية"""
+        reasons = {
+            'stop_loss': 'وقف الخسارة',
+            'take_profit': 'أخذ الربح',
+            'timeout': 'انتهاء الوقت',
+            'manual': 'يدوي'
+        }
+        return reasons.get(reason, reason)
     
     def auto_convert_stuck_assets(self):
         try:
