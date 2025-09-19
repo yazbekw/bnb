@@ -427,21 +427,35 @@ class MomentumHunterBot:
 
         logger.info("✅ تم تهيئة بوت صائد الصاعدات المتقدم بنجاح")
 
+
     def get_all_trading_symbols(self):
         try:
-            tickers = self.get_multiple_tickers(['BTCUSDT', 'ETHUSDT', 'BNBUSDT'])  # قائمة أولية آمنة
-            symbols = []
+            # القائمة الأولية الموسعة
+            important_symbols = [
+                "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
+                "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
+                "DOGEUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT",
+                "INJUSDT", "RUNEUSDT", "APTUSDT", "ARBUSDT", "OPUSDT"
+            ]
+            logger.info(f"🔸 استخدام القائمة الأولية الموسعة: {len(important_symbols)} عملة")
+
+            # محاولة جلب رموز ديناميكية إضافية
+            tickers = self.get_multiple_tickers(important_symbols)
+            dynamic_symbols = []
             for ticker in tickers:
                 symbol = ticker['symbol']
-                if (symbol.endswith('USDT') and 
-                    float(ticker['volume']) * float(ticker['weightedAvgPrice']) > self.min_daily_volume):
-                    symbols.append(symbol)
-            logger.info(f"🔸 تم جلب {len(symbols)} رمز ديناميكي بناءً على الحجم")
-            return symbols if symbols else ["BTCUSDT", "ETHUSDT", "BNBUSDT"]  # قائمة احتياطية
+                if float(ticker['volume']) * float(ticker['weightedAvgPrice']) > self.min_daily_volume:
+                    dynamic_symbols.append(symbol)
+
+            # دمج القائمتين (إزالة التكرار)
+            all_symbols = list(set(important_symbols + dynamic_symbols))
+            logger.info(f"🔸 إجمالي الرموز بعد الدمج: {len(all_symbols)}")
+            return all_symbols if all_symbols else important_symbols  # الرجوع إلى القائمة الأولية إذا فشل الجلب
         except Exception as e:
             logger.error(f"خطأ في جلب الرموز: {e}")
-            logger.info("🔄 الرجوع إلى قائمة الرموز الافتراضية")
-            return ["BTCUSDT", "ETHUSDT", "BNBUSDT"]  # قائمة احتياطية
+            logger.info("🔄 الرجوع إلى القائمة الأولية الموسعة")
+            return important_symbols  # قائمة احتياطية موسعة
     
     def safe_binance_request(self, func, *args, **kwargs):
         if not self.circuit_breaker.can_proceed():
@@ -471,6 +485,7 @@ class MomentumHunterBot:
             logger.error(f"خطأ في جلب تيكر {symbol}: {e}")
             return None
 
+    
     def get_multiple_tickers(self, symbols):
         """واجهة متزامنة لجلب التيكرز"""
         try:
@@ -479,15 +494,17 @@ class MomentumHunterBot:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     return asyncio.run_coroutine_threadsafe(self.get_multiple_tickers_async(symbols), loop).result()
+                else:
+                    return asyncio.run(self.get_multiple_tickers_async(symbols))
             except RuntimeError:
-            # إذا لم تكن هناك حلقة أحداث (مثل داخل ThreadPoolExecutor)، أنشئ واحدة جديدة
+                # إذا لم تكن هناك حلقة أحداث (مثل داخل ThreadPoolExecutor)، أنشئ واحدة جديدة
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
                     return loop.run_until_complete(self.get_multiple_tickers_async(symbols))
                 finally:
+                    asyncio.set_event_loop(None)  # إعادة تعيين الحلقة لتجنب المشكلات في الخيوط
                     loop.close()
-            return asyncio.run(self.get_multiple_tickers_async(symbols))
         except Exception as e:
             logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
             return []
