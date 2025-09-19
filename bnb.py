@@ -219,69 +219,7 @@ class RequestManager:
             
             self.request_count += 1
             return func(*args, **kwargs)
-
-class MongoManager:
-    def __init__(self, connection_string=None):
-        self.connection_string = (connection_string or 
-                                 os.environ.get('MANGO_DB_CONNECTION_STRING') or
-                                 os.environ.get('MONGODB_URI') or
-                                 os.environ.get('DATABASE_URL'))
-        
-        if self.connection_string:
-            logger.info(f"✅ تم العثور على رابط MongoDB")
-        else:
-            logger.warning("❌ لم يتم العثور على رابط MongoDB")
             
-        self.client = None
-        self.db = None
-        self.connect(retries=5, delay=5)
-        
-    def connect(self, retries=3, delay=5):
-        for attempt in range(retries):
-            try:
-                self.client = MongoClient(self.connection_string, serverSelectionTimeoutMS=5000)
-                self.client.admin.command('ping')
-                self.db = self.client['momentum_hunter_bot']
-                self.initialize_db()
-                logger.info("✅ تم الاتصال بـ MongoDB بنجاح")
-                return True
-            except ConnectionFailure as e:
-                logger.error(f"❌ فشل الاتصال بـ MongoDB (محاولة {attempt+1}): {e}")
-                time.sleep(delay * (2 ** attempt))
-        return False
-    
-    def initialize_db(self):
-        if self.db:
-            self.db['trades'].create_index([('symbol', 1), ('status', 1)])
-            self.db['opportunities'].create_index([('scanned_at', 1)])
-    
-    def save_trade(self, trade_data):
-        try:
-            if not self.db:
-                return False
-            collection = self.db['trades']
-            trade_data['timestamp'] = datetime.now(damascus_tz)
-            result = collection.insert_one(trade_data)
-            return True
-        except Exception as e:
-            logger.error(f"خطأ في حفظ الصفقة: {e}")
-            return False
-    
-    def save_opportunity(self, opportunity):
-        try:
-            if not self.db:
-                return False
-            collection = self.db['opportunities']
-            opportunity['scanned_at'] = datetime.now(damascus_tz)
-            collection.insert_one(opportunity)
-            return True
-        except Exception as e:
-            logger.error(f"خطأ في حفظ الفرصة: {e}")
-            return False
-    
-    def get_performance_stats(self):
-        try:
-            if self.db is None:
 
 class MongoManager:
     def __init__(self, connection_string=None):
