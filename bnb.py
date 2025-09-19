@@ -470,6 +470,40 @@ class MomentumHunterBot:
             logger.error(f"خطأ في طلب Binance: {e}")
             return None
 
+    async def fetch_ticker_async(self, symbol, session):
+        """جلب تيكر بشكل غير متزامن باستخدام aiohttp"""
+        try:
+            url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    logger.error(f"فشل جلب {symbol}: {response.status}")
+                    return None
+        except asyncio.TimeoutError:
+            logger.error(f"انتهت مهلة جلب {symbol}")
+            return None
+        except Exception as e:
+            logger.error(f"خطأ في جلب تيكر {symbol}: {e}")
+            return None
+
+    async def fetch_ticker_async(self, symbol, session):
+        """جلب تيكر بشكل غير متزامن باستخدام aiohttp"""
+        try:
+            url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    logger.error(f"فشل جلب {symbol}: {response.status}")
+                    return None
+        except asyncio.TimeoutError:
+            logger.error(f"انتهت مهلة جلب {symbol}")
+            return None
+        except Exception as e:
+            logger.error(f"خطأ في جلب تيكر {symbol}: {e}")
+        return None
+
     # جديد: دالة غير متزامنة لجلب تيكر واحد
     async def fetch_ticker_async(self, symbol, session):
         """جلب تيكر بشكل غير متزامن باستخدام aiohttp"""
