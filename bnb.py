@@ -519,6 +519,13 @@ class MomentumHunterBot:
             logger.error(f"خطأ في جلب تيكر {symbol}: {e}")
             return None
 
+    async def get_multiple_tickers_async(self, symbols):
+        """جلب بيانات التيكرز لعدة رموز بشكل غير متزامن"""
+        async with aiohttp.ClientSession() as session:
+            tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
+            tickers = await asyncio.gather(*tasks, return_exceptions=True)
+            return [ticker for ticker in tickers if ticker is not None]
+
     
     def get_multiple_tickers(self, symbols):
         """واجهة متزامنة لجلب التيكرز"""
