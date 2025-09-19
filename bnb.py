@@ -436,7 +436,9 @@ class MomentumHunterBot:
                 "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
                 "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
                 "DOGEUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT",
-                "INJUSDT", "RUNEUSDT", "APTUSDT", "ARBUSDT", "OPUSDT"
+                "INJUSDT", "RUNEUSDT", "APTUSDT", "ARBUSDT", "OPUSDT",
+                "TRXUSDT", "ALGOUSDT", "VETUSDT", "HBARUSDT", "FTMUSDT",
+                "EGLDUSDT", "XMRUSDT", "GALAUSDT"  # العملات المقترحة الجديدة
             ]
             logger.info(f"🔸 استخدام القائمة الأولية الموسعة: {len(important_symbols)} عملة")
 
