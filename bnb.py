@@ -411,7 +411,7 @@ class MomentumHunterBot:
         self.symbols = self.get_all_trading_symbols()
         self.stable_coins = ['USDT', 'BUSD', 'USDC']
         self.min_daily_volume = 1000000
-        self.min_trade_size = 20
+        self.min_trade_size = 10
         self.max_trade_size = 50
         self.risk_per_trade = 2.0
         self.max_position_size = 0.35
@@ -419,7 +419,7 @@ class MomentumHunterBot:
         
         self.active_trades = {}
         self.last_scan_time = datetime.now()
-        self.min_profit_threshold = 0.005
+        self.min_profit_threshold = 0.003
         
         # جديد: تهيئة نموذج XGBoost
         self.ml_model = None
