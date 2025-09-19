@@ -471,19 +471,26 @@ class MomentumHunterBot:
             logger.error(f"خطأ في جلب تيكر {symbol}: {e}")
             return None
 
-    # جديد: دالة غير متزامنة لجلب تيكرز متعددة
-    async def get_multiple_tickers_async(self, symbols):
-        """جلب تيكرز متعددة بشكل غير متزامن"""
-        batch_size = 50  # جلب 50 رمزًا في كل دفعة
-        results = []
-        async with aiohttp.ClientSession() as session:
-            for i in range(0, len(symbols), batch_size):
-                batch = symbols[i:i + batch_size]
-                tasks = [self.fetch_ticker_async(symbol, session) for symbol in batch]
-                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-                results.extend([r for r in batch_results if r is not None])
-                await asyncio.sleep(0.2)  # تأخير 200 مللي ثانية بين الدفعات
-        return results
+    def get_multiple_tickers(self, symbols):
+        """واجهة متزامنة لجلب التيكرز"""
+        try:
+            # محاولة الحصول على حلقة أحداث موجودة
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    return asyncio.run_coroutine_threadsafe(self.get_multiple_tickers_async(symbols), loop).result()
+            except RuntimeError:
+            # إذا لم تكن هناك حلقة أحداث (مثل داخل ThreadPoolExecutor)، أنشئ واحدة جديدة
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(self.get_multiple_tickers_async(symbols))
+                finally:
+                    loop.close()
+            return asyncio.run(self.get_multiple_tickers_async(symbols))
+        except Exception as e:
+            logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
+            return []
     
     # معدل: واجهة متزامنة للدالة غير المتزامنة
     def get_multiple_tickers(self, symbols):
