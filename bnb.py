@@ -464,28 +464,7 @@ class MomentumHunterBot:
         self.train_ml_model()
         logger.info("✅ تم تهيئة بوت صائد الصاعدات المتقدم بنجاح")
 
-    def get_all_trading_symbols(self):
-        try:
-            important_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", 
-                               "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
-                               "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
-                               "DOGEUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT",
-                               "INJUSDT", "RUNEUSDT", "APTUSDT", "ARBUSDT", "OPUSDT",
-                               "TRXUSDT", "ALGOUSDT", "VETUSDT", "HBARUSDT", "FTMUSDT",
-                               "EGLDUSDT", "XMRUSDT", "GALAUSDT"]
-            logger.info(f"🔸 استخدام القائمة الأولية الموسعة: {len(important_symbols)} عملة")
-
-            tickers = self.get_multiple_tickers(important_symbols)
-            dynamic_symbols = [t['symbol'] for t in tickers if float(t['volume']) * float(t['weightedAvgPrice']) > self.min_daily_volume]
-
-            all_symbols = list(set(important_symbols + dynamic_symbols))
-            logger.info(f"🔸 إجمالي الرموز بعد الدمج: {len(all_symbols)}")
-            return all_symbols if all_symbols else important_symbols
-        except Exception as e:
-            logger.error(f"خطأ في جلب الرموز: {e}")
-            logger.info("🔄 الرجوع إلى القائمة الأولية الموسعة")
-            return important_symbols
-
+    
     def safe_binance_request(self, func, *args, **kwargs):
         if not self.circuit_breaker.can_proceed():
             logger.warning("دائرة الكسر مفتوحة - تجاهل الطلب")
@@ -665,98 +644,7 @@ class MomentumHunterBot:
             logger.info("✅ تم تدريب نموذج XGBoost بنجاح")
         except Exception as e:
             logger.error(f"خطأ في تدريب النموذج: {e}")
-
-    def calculate_momentum_score(self, symbol):
-        try:
-            data = self.get_historical_data(symbol, '15m', 100)
-            if data is None or len(data) < 50:
-                return 0, {}
             
-            data = self.calculate_technical_indicators(data)
-            latest = data.iloc[-1]
-            prev = data.iloc[-2]
-            
-            score = 0
-            details = {}
-            
-            if latest['ema21'] > latest['ema50'] and latest['ema50'] > latest['ema100']:
-                score += self.WEIGHTS['trend']
-                details['trend'] = 'صاعد قوي'
-            elif latest['ema21'] > latest['ema50']:
-                score += self.WEIGHTS['trend'] * 0.6
-                details['trend'] = 'صاعد'
-            else:
-                details['trend'] = 'هابط'
-                return 0, details
-            
-            window = data.iloc[max(0, len(data)-4):]
-            for i in range(1, len(window)):
-                if window['ema8'].iat[i-1] <= window['ema21'].iat[i-1] and window['ema8'].iat[i] > window['ema21'].iat[i]:
-                    score += self.WEIGHTS['crossover']
-                    details['crossover'] = 'إيجابي'
-                    break
-            
-            price_change_5 = ((latest['close'] - data.iloc[-5]['close']) / data.iloc[-5]['close']) * 100 if len(data) >= 5 else 0
-            price_change_15 = ((latest['close'] - data.iloc[-15]['close']) / data.iloc[-15]['close']) * 100 if len(data) >= 15 else 0
-            
-            details['price_change_5candles'] = round(price_change_5, 2)
-            details['price_change_15candles'] = round(price_change_15, 2)
-            
-            if price_change_5 >= 2.0 and price_change_15 >= 3.0:
-                score += self.WEIGHTS['price_change']
-            
-            volume_ratio = latest['volume_ratio']
-            details['volume_ratio'] = round(volume_ratio, 2) if not pd.isna(volume_ratio) else 1
-            
-            if volume_ratio >= 1.8:
-                score += self.WEIGHTS['volume']
-            
-            details['rsi'] = round(latest['rsi'], 2) if not pd.isna(latest['rsi']) else 50
-            
-            if 40 <= latest['rsi'] <= 65:
-                score += self.WEIGHTS['rsi']
-            
-            if latest['macd'] > latest['macd_signal'] and latest['macd_hist'] > 0:
-                score += self.WEIGHTS['macd']
-                details['macd'] = 'إيجابي'
-            
-            details['adx'] = round(latest['adx'], 2) if not pd.isna(latest['adx']) else 0
-            if latest['adx'] >= 25:
-                score += self.WEIGHTS['adx']
-                details['adx_strength'] = 'قوي'
-            elif latest['adx'] >= 20:
-                score += self.WEIGHTS['adx'] * 0.6
-                details['adx_strength'] = 'متوسط'
-            
-            if latest['close'] > latest['middle_bb']:
-                score += self.WEIGHTS['bollinger']
-                details['bollinger'] = 'فوق المتوسط'
-            
-            details['current_price'] = latest['close']
-            details['atr'] = latest['atr'] if not pd.isna(latest['atr']) else 0
-            details['atr_percent'] = round((latest['atr'] / latest['close']) * 100, 2) if latest['atr'] > 0 else 0
-            
-            if self.ml_model:
-                try:
-                    input_data = np.array([[
-                        score,
-                        details.get('rsi', 50),
-                        details.get('adx', 0),
-                        details.get('volume_ratio', 1),
-                        details.get('atr_percent', 0)
-                    ]])
-                    pred_prob = self.ml_model.predict_proba(input_data)[0][1]
-                    score += pred_prob * 20
-                    score = min(score, 100)
-                    details['ml_prediction'] = round(pred_prob * 100, 2)
-                    logger.info(f"🔮 تنبؤ XGBoost لـ {symbol}: {details['ml_prediction']}%")
-                except Exception as e:
-                    logger.error(f"خطأ في تنبؤ XGBoost لـ {symbol}: {e}")
-
-            return min(score, 100), details
-        except Exception as e:
-            logger.error(f"خطأ في حساب زخم {symbol}: {e}")
-            return 0, {}
 
     async def find_best_opportunities(self):
         opportunities = []
@@ -1220,6 +1108,131 @@ class MomentumHunterBot:
         if self.notifier:
             self.notifier.send_message("🛑 <b>إيقاف البوت</b>", 'shutdown')
 
+    def get_all_trading_symbols(self):
+        try:
+            important_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", 
+                               "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
+                               "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
+                               "DOGEUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT",
+                               "INJUSDT", "RUNEUSDT", "APTUSDT", "ARBUSDT", "OPUSDT",
+                               "TRXUSDT", "ALGOUSDT", "VETUSDT", "HBARUSDT", "FTMUSDT",
+                               "EGLDUSDT", "XMRUSDT", "GALAUSDT"]
+            logger.info(f"🔸 استخدام القائمة الأولية الموسعة: {len(important_symbols)} عملة")
+
+            tickers = self.get_multiple_tickers(important_symbols)
+            logger.debug(f"تم جلب {len(tickers)} تيكر من Binance")
+            dynamic_symbols = [t['symbol'] for t in tickers if float(t['volume']) * float(t['weightedAvgPrice']) > self.min_daily_volume]
+
+            all_symbols = list(set(important_symbols + dynamic_symbols))
+            logger.info(f"🔸 إجمالي الرموز بعد الدمج: {len(all_symbols)}")
+            return all_symbols if all_symbols else important_symbols
+        except Exception as e:
+            logger.error(f"خطأ في جلب الرموز: {e}", exc_info=True)
+            logger.info("🔄 الرجوع إلى القائمة الأولية الموسعة")
+            return important_symbols
+
+    def calculate_momentum_score(self, symbol):
+        try:
+            data = self.get_historical_data(symbol, '15m', 100)
+            if data is None or len(data) < 50:
+                logger.warning(f"بيانات غير كافية لـ {symbol}: أقل من 50 شمعة")
+                return 0, {}
+
+            data = self.calculate_technical_indicators(data)
+            latest = data.iloc[-1]
+            prev = data.iloc[-2]
+            
+            score = 0
+            details = {}
+            
+            logger.debug(f"تحليل {symbol}: EMA21={latest['ema21']:.2f}, EMA50={latest['ema50']:.2f}, EMA100={latest['ema100']:.2f}")
+            if latest['ema21'] > latest['ema50'] and latest['ema50'] > latest['ema100']:
+                score += self.WEIGHTS['trend']
+                details['trend'] = 'صاعد قوي'
+            elif latest['ema21'] > latest['ema50']:
+                score += self.WEIGHTS['trend'] * 0.6
+                details['trend'] = 'صاعد'
+            else:
+                details['trend'] = 'هابط'
+                logger.debug(f"تخطي {symbol} بسبب اتجاه هابط")
+                return 0, details
+            
+            window = data.iloc[max(0, len(data)-4):]
+            for i in range(1, len(window)):
+                if window['ema8'].iat[i-1] <= window['ema21'].iat[i-1] and window['ema8'].iat[i] > window['ema21'].iat[i]:
+                    score += self.WEIGHTS['crossover']
+                    details['crossover'] = 'إيجابي'
+                    logger.debug(f"تقاطع إيجابي لـ {symbol}")
+                    break
+            
+            price_change_5 = ((latest['close'] - data.iloc[-5]['close']) / data.iloc[-5]['close']) * 100 if len(data) >= 5 else 0
+            price_change_15 = ((latest['close'] - data.iloc[-15]['close']) / data.iloc[-15]['close']) * 100 if len(data) >= 15 else 0
+            
+            details['price_change_5candles'] = round(price_change_5, 2)
+            details['price_change_15candles'] = round(price_change_15, 2)
+            logger.debug(f"تغير السعر {symbol}: 5 شمعات={price_change_5:.2f}%, 15 شمعة={price_change_15:.2f}%")
+            
+            if price_change_5 >= 2.0 and price_change_15 >= 3.0:
+                score += self.WEIGHTS['price_change']
+            
+            volume_ratio = latest['volume_ratio']
+            details['volume_ratio'] = round(volume_ratio, 2) if not pd.isna(volume_ratio) else 1
+            logger.debug(f"نسبة الحجم {symbol}: {volume_ratio:.2f}")
+            
+            if volume_ratio >= 1.8:
+                score += self.WEIGHTS['volume']
+            
+            details['rsi'] = round(latest['rsi'], 2) if not pd.isna(latest['rsi']) else 50
+            logger.debug(f"RSI {symbol}: {details['rsi']}")
+            
+            if 40 <= latest['rsi'] <= 65:
+                score += self.WEIGHTS['rsi']
+            
+            if latest['macd'] > latest['macd_signal'] and latest['macd_hist'] > 0:
+                score += self.WEIGHTS['macd']
+                details['macd'] = 'إيجابي'
+                logger.debug(f"MACD إيجابي لـ {symbol}")
+            
+            details['adx'] = round(latest['adx'], 2) if not pd.isna(latest['adx']) else 0
+            logger.debug(f"ADX {symbol}: {details['adx']}")
+            if latest['adx'] >= 25:
+                score += self.WEIGHTS['adx']
+                details['adx_strength'] = 'قوي'
+            elif latest['adx'] >= 20:
+                score += self.WEIGHTS['adx'] * 0.6
+                details['adx_strength'] = 'متوسط'
+            
+            if latest['close'] > latest['middle_bb']:
+                score += self.WEIGHTS['bollinger']
+                details['bollinger'] = 'فوق المتوسط'
+            
+            details['current_price'] = latest['close']
+            details['atr'] = latest['atr'] if not pd.isna(latest['atr']) else 0
+            details['atr_percent'] = round((latest['atr'] / latest['close']) * 100, 2) if latest['atr'] > 0 else 0
+            
+            if self.ml_model:
+                try:
+                    input_data = np.array([[
+                        score,
+                        details.get('rsi', 50),
+                        details.get('adx', 0),
+                        details.get('volume_ratio', 1),
+                        details.get('atr_percent', 0)
+                    ]])
+                    pred_prob = self.ml_model.predict_proba(input_data)[0][1]
+                    score += pred_prob * 20
+                    score = min(score, 100)
+                    details['ml_prediction'] = round(pred_prob * 100, 2)
+                    logger.debug(f"تنبؤ XGBoost لـ {symbol}: {details['ml_prediction']}%")
+                except Exception as e:
+                    logger.error(f"خطأ في تنبؤ XGBoost لـ {symbol}: {e}")
+
+            logger.info(f"النتيجة النهائية لـ {symbol}: {score}/100")
+            return min(score, 100), details
+        except Exception as e:
+            logger.error(f"خطأ في حساب زخم {symbol}: {e}", exc_info=True)
+            return 0, {}
+
     def run_trading_cycle(self):
         try:
             logger.info("🔄 بدء دورة التداول الجديدة")
@@ -1229,6 +1242,7 @@ class MomentumHunterBot:
                 return
     
             usdt_balance = self.auto_convert_stuck_assets()
+            logger.info(f"رصيد USDT الحالي: ${usdt_balance:.2f}")
     
             if usdt_balance < self.min_trade_size:
                 logger.warning(f"رصيد USDT غير كافي: {usdt_balance:.2f}")
@@ -1249,16 +1263,17 @@ class MomentumHunterBot:
                             time.sleep(1)
                 else:
                     logger.info("🔍 لم يتم العثور على فرص مناسبة")
+                    logger.debug("تفاصيل الرفض: أعلى درجات الرموز المرفوضة تقل عن 60")
             else:
                 logger.info(f"⏸️ عدد الصفقات النشطة ({len(self.active_trades)}) - تخطي البحث عن فرص جديدة")
     
             self.last_scan_time = datetime.now(damascus_tz)
             logger.info(f"✅ اكتملت دورة التداول في {self.last_scan_time}")
         except Exception as e:
-            logger.error(f"❌ خطأ في دورة التداول: {e}")
+            logger.error(f"❌ خطأ في دورة التداول: {e}", exc_info=True)
             if self.notifier:
                 self.notifier.send_message(f"❌ <b>خطأ في دورة التداول</b>\n{e}", 'error')
-
+    
     def send_daily_report(self):
         try:
             stats = self.get_performance_stats()
