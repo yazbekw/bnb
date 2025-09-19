@@ -195,31 +195,30 @@ class RequestManager:
     def __init__(self):
         self.request_count = 0
         self.last_request_time = time.time()
-        self.max_requests_per_minute = 1100
+        self.max_requests_per_minute = 500  # خفض الحد لتجنب الحظر
         self.request_lock = threading.Lock()
-        
+
     def safe_request(self, func, *args, **kwargs):
         with self.request_lock:
             current_time = time.time()
             elapsed = current_time - self.last_request_time
-            
-            if elapsed < 0.05:
-                time.sleep(0.05 - elapsed)
-            
+
+            if elapsed < 0.1:  # زيادة التأخير إلى 100 مللي ثانية
+                time.sleep(0.1 - elapsed)
+
             if current_time - self.last_request_time >= 60:
                 self.request_count = 0
                 self.last_request_time = current_time
-            
+
             if self.request_count >= self.max_requests_per_minute:
                 sleep_time = 60 - (current_time - self.last_request_time)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                 self.request_count = 0
                 self.last_request_time = time.time()
-            
+
             self.request_count += 1
             return func(*args, **kwargs)
-            
 
 class MongoManager:
     def __init__(self, connection_string=None):
@@ -430,14 +429,20 @@ class MomentumHunterBot:
 
     def get_all_trading_symbols(self):
         try:
-            tickers = self.get_multiple_tickers(self.client.get_all_tickers())  # معدل: استخدام الدالة الجديدة
-            symbols = [t['symbol'] for t in tickers if t['symbol'].endswith('USDT') and float(t['volume']) * float(t['weightedAvgPrice']) > self.min_daily_volume]
+            tickers = self.get_multiple_tickers(['BTCUSDT', 'ETHUSDT', 'BNBUSDT'])  # قائمة أولية آمنة
+            symbols = []
+            for ticker in tickers:
+                symbol = ticker['symbol']
+                if (symbol.endswith('USDT') and 
+                    float(ticker['volume']) * float(ticker['weightedAvgPrice']) > self.min_daily_volume):
+                    symbols.append(symbol)
             logger.info(f"🔸 تم جلب {len(symbols)} رمز ديناميكي بناءً على الحجم")
-            return symbols
+            return symbols if symbols else ["BTCUSDT", "ETHUSDT", "BNBUSDT"]  # قائمة احتياطية
         except Exception as e:
             logger.error(f"خطأ في جلب الرموز: {e}")
-            return ["BTCUSDT", "ETHUSDT"]
-
+            logger.info("🔄 الرجوع إلى قائمة الرموز الافتراضية")
+            return ["BTCUSDT", "ETHUSDT", "BNBUSDT"]  # قائمة احتياطية
+    
     def safe_binance_request(self, func, *args, **kwargs):
         if not self.circuit_breaker.can_proceed():
             logger.warning("دائرة الكسر مفتوحة - تجاهل الطلب")
@@ -469,11 +474,17 @@ class MomentumHunterBot:
     # جديد: دالة غير متزامنة لجلب تيكرز متعددة
     async def get_multiple_tickers_async(self, symbols):
         """جلب تيكرز متعددة بشكل غير متزامن"""
+        batch_size = 50  # جلب 50 رمزًا في كل دفعة
+        results = []
         async with aiohttp.ClientSession() as session:
-            tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            return [result for result in results if result is not None]
-
+            for i in range(0, len(symbols), batch_size):
+                batch = symbols[i:i + batch_size]
+                tasks = [self.fetch_ticker_async(symbol, session) for symbol in batch]
+                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+                results.extend([r for r in batch_results if r is not None])
+                await asyncio.sleep(0.2)  # تأخير 200 مللي ثانية بين الدفعات
+        return results
+    
     # معدل: واجهة متزامنة للدالة غير المتزامنة
     def get_multiple_tickers(self, symbols):
         """واجهة متزامنة لجلب التيكرز"""
@@ -737,20 +748,21 @@ class MomentumHunterBot:
     def find_best_opportunities(self):
         opportunities = []
         rejected_symbols = []
-    
+        symbols_to_analyze = self.symbols[:100]  # تحليل أول 100 رمز فقط
+
         def process_symbol(symbol):
             try:
                 ticker = self.get_multiple_tickers([symbol])[0] if symbol in self.get_multiple_tickers([symbol]) else None
                 if not ticker:
                     return None
                 daily_volume = float(ticker['volume']) * float(ticker['lastPrice'])
-            
+
                 if daily_volume < self.min_daily_volume:
                     rejected_symbols.append({'symbol': symbol, 'reason': f'حجم غير كافي: {daily_volume:,.0f}'})
                     return None
-            
+
                 momentum_score, details = self.calculate_momentum_score(symbol)
-            
+
                 if momentum_score >= self.momentum_score_threshold:
                     opportunity = {
                         'symbol': symbol,
@@ -763,23 +775,23 @@ class MomentumHunterBot:
                 else:
                     rejected_symbols.append({'symbol': symbol, 'reason': f'نقاط غير كافية: {momentum_score}'})
                     return None
-                
+
             except Exception as e:
                 logger.error(f"خطأ في تحليل {symbol}: {e}")
                 return None
-    
-        max_workers = min(15, os.cpu_count() or 4)
+
+        max_workers = min(10, os.cpu_count() or 4)  # تقليل عدد العمال
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(process_symbol, self.symbols))
-    
+            results = list(executor.map(process_symbol, symbols_to_analyze))
+
         opportunities = [result for result in results if result is not None]
         opportunities.sort(key=lambda x: x['score'], reverse=True)
-    
+
         if rejected_symbols and not opportunities:
             top_rejected = sorted([r for r in rejected_symbols if 'نقاط' in r['reason']], 
-                                 key=lambda x: float(x['reason'].split(': ')[1]), reverse=True)[:5]
+                             key=lambda x: float(x['reason'].split(': ')[1]), reverse=True)[:5]
             logger.info(f"🔍 تم رفض {len(rejected_symbols)} عملة. أفضل العملات المرفوضة: {top_rejected}")
-    
+
         return opportunities
     
     def check_correlation(self, symbol, active_symbols):
