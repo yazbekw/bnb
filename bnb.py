@@ -71,6 +71,16 @@ def active_trades():
     except Exception as e:
         return {'error': str(e)}
 
+@app.route('/trade_history', methods=['GET'])
+@limiter.limit("10 per minute")
+def trade_history():
+    try:
+        bot = MomentumHunterBot()
+        trades = list(bot.mongo_manager.db['trades'].find({'status': 'completed'}))
+        return jsonify(trades)
+    except Exception as e:
+        return {'error': str(e)}
+
 @app.route('/backtest', methods=['POST'])
 @limiter.limit("2 per minute")
 def run_backtest():
