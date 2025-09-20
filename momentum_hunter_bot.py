@@ -951,7 +951,7 @@ class MomentumHunterBot:
     def manage_active_trades(self):
         for symbol, trade in list(self.active_trades.items()):
             try:
-                trade_age = (datetime.now() - trade['timestamp']).total_seconds()
+                trade_age = (datetime.now(damascus_tz) - trade['timestamp']).total_seconds()
                 if trade_age < 60:
                     continue
                 
@@ -1081,7 +1081,7 @@ class MomentumHunterBot:
                 'position_size_usdt': position_size_usdt,
                 'risk_percentage': size_info.get('risk_percentage', 0),
                 'risk_level': size_info.get('risk_level', ''),
-                'timestamp': datetime.now(),
+                'timestamp': datetime.now(damascus_tz),
                 'status': 'open',
                 'score': opportunity['score'],
                 'order_id': order['orderId'],
@@ -1140,7 +1140,7 @@ class MomentumHunterBot:
                 return False
         
             trade['exit_price'] = exit_price
-            trade['exit_time'] = datetime.now()
+            trade['exit_time'] = datetime.now(damascus_tz)
             trade['profit_loss'] = net_pnl
             trade['pnl_percent'] = pnl_percent
             trade['status'] = 'completed'
@@ -1192,7 +1192,7 @@ class MomentumHunterBot:
         
             net_pnl = ((current_price - trade['entry_price']) * trade['quantity']) - trade['trade_size'] * 0.001
             pnl_percent = (net_pnl / trade['trade_size']) * 100 if trade['trade_size'] > 0 else 0
-            logger.info(f"تتبع {symbol}: سعر حالي = {current_price:.4f}, ربح/خسارة = {net_pnl:.2f} ({pnl_percent:.2f}%), وقف خسارة = {trade['stop_loss']:.4f}, أخذ ربح = {trade['take_profit']:.4f}, حالة = {trade['status']}, مدة = {(datetime.now() - trade['timestamp']).total_seconds() / 60:.1f} دقيقة")
+            logger.info(f"تتبع {symbol}: سعر حالي = {current_price:.4f}, ربح/خسارة = {net_pnl:.2f} ({pnl_percent:.2f}%), وقف خسارة = {trade['stop_loss']:.4f}, أخذ ربح = {trade['take_profit']:.4f}, حالة = {trade['status']}, مدة = {(datetime.now(damascus_tz) - trade['timestamp']).total_seconds() / 60:.1f} دقيقة")
 
     def translate_exit_reason(self, reason):
         reasons = {
