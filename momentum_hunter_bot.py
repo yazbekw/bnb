@@ -430,14 +430,16 @@ class MomentumHunterBot:
             
         self.health_monitor = HealthMonitor(self)
         
-        self.symbols = self.get_all_trading_symbols()
-        self.stable_coins = ['USDT', 'BUSD', 'USDC']
+        
         self.min_daily_volume = 1000000
         self.min_trade_size = 10
         self.max_trade_size = 50
         self.risk_per_trade = 2.0
         self.max_position_size = 0.35
         self.momentum_score_threshold = 50  # خفضتها لدخول أسرع
+
+        self.symbols = self.get_all_trading_symbols()
+        self.stable_coins = ['USDT', 'BUSD', 'USDC']
         
         self.active_trades = {}
         self.last_scan_time = datetime.now()
