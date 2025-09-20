@@ -392,11 +392,16 @@ class HealthMonitor:
         
     def check_connections(self):
         try:
+            # التحقق من اتصال Binance
             self.bot.request_manager.safe_request(self.bot.client.get_server_time)
             
-            if not self.bot.mongo_manager.connect():
-                logger.warning("⚠️  فشل الاتصال بـ MongoDB - لكن البوت سيستمر في العمل")
-                return True
+            # التحقق من اتصال MongoDB إذا كان موجوداً
+            if hasattr(self.bot, 'mongo_manager') and self.bot.mongo_manager is not None:
+                if not self.bot.mongo_manager.connect():
+                    logger.warning("⚠️ فشل الاتصال بـ MongoDB - لكن البوت سيستمر في العمل")
+                    # لا نعود False هنا لأن البوت يمكنه العمل بدون MongoDB
+            else:
+                logger.info("ℹ️ MongoDB غير مهيء - تخطي التحقق من الاتصال")
                 
             self.error_count = 0
             return True
@@ -412,10 +417,11 @@ class HealthMonitor:
     
     def restart_bot(self):
         logger.warning("🔄 إعادة تشغيل البوت بسبب كثرة الأخطاء")
-        if self.bot.notifier:
+        if hasattr(self.bot, 'notifier') and self.bot.notifier:
             self.bot.notifier.send_message("🔄 <b>إعادة تشغيل البوت</b>\nكثرة الأخطاء تتطلب إعادة التشغيل", "restart")
         
         os._exit(1)
+
 
 class MomentumHunterBot:
     # ============ الإعدادات الأساسية القابلة للتعديل ============
