@@ -495,7 +495,7 @@ class MomentumHunterBot:
         self.client = Client(self.api_key, self.api_secret)
         self.request_manager = RequestManager()
         self.circuit_breaker = CircuitBreaker()
-        self.mongo_manager = MongoManager()
+        #self.mongo_manager = MongoManager()
         self.cache = TTLCache(maxsize=1000, ttl=self.TRADING_SETTINGS['cache_ttl_seconds'])
     
         if self.telegram_token and self.telegram_chat_id:
@@ -547,59 +547,82 @@ class MomentumHunterBot:
             logger.warning("⚠️ Notifier غير مفعل - لا يمكن إجراء الاختبار")
             
     def load_existing_trades(self):
-        """تحميل الصفقات المفتوحة الحالية من Binance"""
+        """تحميل الصفقات المفتوحة الحالية من Binance فقط"""
         try:
-            # جلب جميع الأوامر المفتوحة
+            # جلب جميع الأوامر المفتوحة من Binance
             open_orders = self.safe_binance_request(self.client.get_open_orders)
+        
+            if not open_orders:
+                logger.info("لا توجد أوامر مفتوحة في Binance")
+                return
         
             for order in open_orders:
                 if order['side'] == 'BUY' and order['status'] == 'FILLED':
                     symbol = order['symbol']
+                    current_price = self.get_current_price(symbol)
                 
-                    # جلب تفاصيل الصفقة إذا كانت موجودة في MongoDB
-                    existing_trade = self.mongo_manager.db['trades'].find_one({
+                    if current_price is None:
+                        continue
+                
+                    # إنشاء بيانات الصفقة من Binance فقط
+                    trade_data = {
                         'symbol': symbol,
+                        'entry_price': float(order['price']),
+                        'quantity': float(order['executedQty']),
+                        'trade_size': float(order['executedQty']) * float(order['price']),
+                        'stop_loss': current_price * 0.98,  # وقف افتراضي
+                        'take_profit': current_price * 1.04,  # ربح افتراضي
+                        'timestamp': datetime.fromtimestamp(order['time'] / 1000),
                         'status': 'open',
-                        'order_id': order['orderId']
-                    })
+                        'order_id': order['orderId'],
+                        'first_profit_taken': False  # إضافة افتراضية
+                    }
                  
-                    if existing_trade:
-                        self.active_trades[symbol] = existing_trade
-                        logger.info(f"✅ تم تحميل الصفقة الموجودة: {symbol}")
-                    else:
-                        # إنشاء صفقة جديدة من البيانات المتاحة
-                        current_price = self.get_current_price(symbol)
-                        trade_data = {
-                            'symbol': symbol,
-                            'entry_price': float(order['price']),
-                            'quantity': float(order['executedQty']),
-                            'trade_size': float(order['executedQty']) * float(order['price']),
-                            'stop_loss': current_price * 0.98,  # وقف افتراضي
-                            'take_profit': current_price * 1.04,  # ربح افتراضي
-                            'timestamp': datetime.fromtimestamp(order['time'] / 1000),
-                            'status': 'open',
-                            'order_id': order['orderId']
-                        }
-                        self.active_trades[symbol] = trade_data
-                        self.mongo_manager.save_trade(trade_data)
-                        logger.info(f"✅ تم إنشاء صفقة جديدة من الأمر المفتوح: {symbol}")
+                    self.active_trades[symbol] = trade_data
+                    logger.info(f"✅ تم تحميل الصفقة من Binance: {symbol}")
                     
         except Exception as e:
-            logger.error(f"❌ خطأ في تحميل الصفقات الموجودة: {e}")
+            logger.error(f"❌ خطأ في تحميل الصفقات من Binance: {e}")
             
     def sync_active_trades_with_db(self):
-        """مزامنة الصفقات النشطة مع قاعدة البيانات"""
+        """مزامنة الصفقات النشطة مع Binance فقط"""
         try:
-            # جلب جميع الصفقات المفتوحة من MongoDB
-            open_trades = list(self.mongo_manager.db['trades'].find({'status': 'open'}))
+            # جلب جميع الأوامر المفتوحة من Binance
+            open_orders = self.safe_binance_request(self.client.get_open_orders)
         
-            for trade in open_trades:
-                symbol = trade['symbol']
-                self.active_trades[symbol] = trade
-                logger.info(f"✅ تم مزامنة الصفقة: {symbol}")
+            if not open_orders:
+                logger.info("لا توجد أوامر مفتوحة في Binance للمزامنة")
+                return
+        
+            # مسح الصفقات النشطة الحالية وإعادة بنائها من Binance
+            self.active_trades.clear()
+        
+            for order in open_orders:
+                if order['side'] == 'BUY' and order['status'] == 'FILLED':
+                    symbol = order['symbol']
+                    current_price = self.get_current_price(symbol)
+                
+                    if current_price is None:
+                        continue
+                
+                    trade_data = {
+                        'symbol': symbol,
+                        'entry_price': float(order['price']),
+                        'quantity': float(order['executedQty']),
+                        'trade_size': float(order['executedQty']) * float(order['price']),
+                        'stop_loss': current_price * 0.98,
+                        'take_profit': current_price * 1.04,
+                        'timestamp': datetime.fromtimestamp(order['time'] / 1000),
+                        'status': 'open',
+                        'order_id': order['orderId'],
+                        'first_profit_taken': False
+                    }
+                
+                    self.active_trades[symbol] = trade_data
+                    logger.info(f"✅ تم مزامنة الصفقة من Binance: {symbol}")
             
         except Exception as e:
-            logger.error(f"❌ خطأ في مزامنة الصفقات: {e}")
+            logger.error(f"❌ خطأ في مزامنة الصفقات من Binance: {e}")
             
     def get_all_trading_symbols(self):
         try:
@@ -1712,18 +1735,31 @@ class MomentumHunterBot:
             logger.error(f"خطأ في إرسال التقرير اليومي: {e}")
             
     def validate_active_trades(self):
-        """التحقق من أن الصفقات المفتوحة لا تزال صالحة"""
+        """التحقق من أن الصفقات المفتوحة لا تزال صالحة في Binance"""
         for symbol in list(self.active_trades.keys()):
             try:
+                trade = self.active_trades[symbol]
+            
                 # التحقق من أن الصفقة لا تزال مفتوحة في Binance
                 order_info = self.safe_binance_request(self.client.get_order,
                                                      symbol=symbol,
-                                                     orderId=self.active_trades[symbol]['order_id'])
+                                                     orderId=trade['order_id'])
             
-                if order_info and order_info['status'] != 'FILLED':
-                    # الصفقة لم تعد مفتوحة
-                    logger.warning(f"⚠️ الصفقة {symbol} لم تعد مفتوحة - الإزالة من القائمة")
+                if not order_info or order_info['status'] != 'FILLED':
+                    # الصفقة لم تعد مفتوحة في Binance
+                    logger.warning(f"⚠️ الصفقة {symbol} لم تعد مفتوحة في Binance - الإزالة من القائمة")
                     del self.active_trades[symbol]
+                    continue
+                
+                # تحديث السعر الحالي ووقف الخسارة
+                current_price = self.get_current_price(symbol)
+                if current_price:
+                    # تحديث وقف الخسارة تلقائياً إذا لزم الأمر
+                    if (current_price > trade['entry_price'] * 1.005 and 
+                        trade['stop_loss'] < trade['entry_price']):
+                        new_sl = trade['entry_price'] * 1.002  # فوق نقطة الدخول بقليل
+                        trade['stop_loss'] = new_sl
+                        logger.info(f"📈 تم تحديث وقف الخسارة لـ {symbol} إلى ${new_sl:.4f}")
                 
             except Exception as e:
                 logger.error(f"❌ خطأ في التحقق من صفقة {symbol}: {e}")
