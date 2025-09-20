@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import requests
 import logging
 import warnings
+warnings.filterwarnings('ignore')
 from dotenv import load_dotenv
 import threading
 import json
@@ -23,7 +24,6 @@ from flask_limiter.util import get_remote_address
 import aiohttp
 import asyncio
 from xgboost import XGBClassifier
-import colorlog
 
 # ضبط توقيت الخادم إلى توقيت دمشق
 damascus_tz = pytz.timezone('Asia/Damascus')
@@ -34,48 +34,13 @@ if hasattr(time, 'tzset'):
 # تحميل متغيرات البيئة
 load_dotenv()
 
-# إعداد logging مع ألوان
-logger = colorlog.getLogger(__name__)
-handler = colorlog.StreamHandler()
-formatter = colorlog.ColoredFormatter(
-    '%(log_color)s%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    log_colors={
-        'DEBUG': 'cyan',
-        'INFO': 'green',
-        'WARNING': 'yellow',
-        'ERROR': 'red',
-        'CRITICAL': 'red,bg_white',
-    }
-)
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-# إعداد ملف يومي للسجلات
-log_file = f"momentum_bot_{datetime.now().strftime('%Y-%m-%d')}.log"
-file_handler = logging.FileHandler(log_file, encoding='utf-8')
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-# إنشاء تطبيق Flask
+# إنشاء تطبيق Flask للرصد الصحي
 app = Flask(__name__)
 limiter = Limiter(app=app, key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
 
 @app.route('/')
 def health_check():
     return {'status': 'healthy', 'service': 'momentum-hunter-bot', 'timestamp': datetime.now(damascus_tz).isoformat()}
-
-@app.route('/logs')
-@limiter.limit("5 per minute")
-def get_logs():
-    try:
-        with open(log_file, 'r', encoding='utf-8') as f:
-            logs = f.readlines()[-100:]  # آخر 100 سطر
-        return jsonify({'logs': logs})
-    except Exception as e:
-        logger.error(f"خطأ في جلب السجلات: {e}")
-        return {'error': str(e)}
 
 @app.route('/stats')
 @limiter.limit("10 per minute")
@@ -123,6 +88,17 @@ def run_backtest():
 def run_flask_app():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
+# إعداد logging مع تحسين الأداء
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('momentum_bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class CircuitBreaker:
     def __init__(self, failure_threshold=5, recovery_time=300):
@@ -178,6 +154,7 @@ class TelegramNotifier:
                 
                 self._send_message_immediate(message_data['message'], message_data['message_type'])
                 time.sleep(0.5)
+                
             except Exception as e:
                 logger.error(f"خطأ في معالجة طابور الرسائل: {e}")
                 time.sleep(1)
@@ -218,7 +195,7 @@ class RequestManager:
     def __init__(self):
         self.request_count = 0
         self.last_request_time = time.time()
-        self.max_requests_per_minute = 500
+        self.max_requests_per_minute = 500  # خفض الحد لتجنب الحظر
         self.request_lock = threading.Lock()
 
     def safe_request(self, func, *args, **kwargs):
@@ -226,7 +203,7 @@ class RequestManager:
             current_time = time.time()
             elapsed = current_time - self.last_request_time
 
-            if elapsed < 0.1:
+            if elapsed < 0.1:  # زيادة التأخير إلى 100 مللي ثانية
                 time.sleep(0.1 - elapsed)
 
             if current_time - self.last_request_time >= 60:
@@ -246,9 +223,9 @@ class RequestManager:
 class MongoManager:
     def __init__(self, connection_string=None):
         self.connection_string = (connection_string or 
-                                os.environ.get('MANGO_DB_CONNECTION_STRING') or
-                                os.environ.get('MONGODB_URI') or
-                                os.environ.get('DATABASE_URL'))
+                                 os.environ.get('MANGO_DB_CONNECTION_STRING') or
+                                 os.environ.get('MONGODB_URI') or
+                                 os.environ.get('DATABASE_URL'))
         
         if self.connection_string:
             logger.info("✅ تم العثور على رابط MongoDB")
@@ -274,7 +251,7 @@ class MongoManager:
         return False
     
     def initialize_db(self):
-        if self.db is not None:
+        if self.db is not None:  # معدل: استخدام is not None
             self.db['trades'].create_index([('symbol', 1), ('status', 1)])
     
     def save_trade(self, trade_data):
@@ -396,7 +373,7 @@ class HealthMonitor:
             self.bot.request_manager.safe_request(self.bot.client.get_server_time)
             
             if not self.bot.mongo_manager.connect():
-                logger.warning("⚠️ فشل الاتصال بـ MongoDB - لكن البوت سيستمر في العمل")
+                logger.warning("⚠️  فشل الاتصال بـ MongoDB - لكن البوت سيستمر في العمل")
                 return True
                 
             self.error_count = 0
@@ -420,8 +397,14 @@ class HealthMonitor:
 
 class MomentumHunterBot:
     WEIGHTS = {
-        'trend': 25, 'crossover': 20, 'price_change': 15, 'volume': 15,
-        'rsi': 10, 'macd': 10, 'adx': 15, 'bollinger': 5
+        'trend': 25,
+        'crossover': 20,
+        'price_change': 15,
+        'volume': 15,
+        'rsi': 10,
+        'macd': 10,
+        'adx': 15,
+        'bollinger': 5
     }
 
     def __init__(self, dry_run=False):
@@ -430,43 +413,73 @@ class MomentumHunterBot:
         self.api_secret = os.environ.get('BINANCE_API_SECRET')
         self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
-    
+        
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
-        
+            
         self.client = Client(self.api_key, self.api_secret)
         self.request_manager = RequestManager()
         self.circuit_breaker = CircuitBreaker()
         self.mongo_manager = MongoManager()
         self.cache = TTLCache(maxsize=1000, ttl=300)
-    
+        
         if self.telegram_token and self.telegram_chat_id:
             self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id)
         else:
             self.notifier = None
-        
+            
         self.health_monitor = HealthMonitor(self)
-    
-        # تعيين min_daily_volume قبل استدعاء get_all_trading_symbols
+        
+        self.symbols = self.get_all_trading_symbols()
+        self.stable_coins = ['USDT', 'BUSD', 'USDC']
         self.min_daily_volume = 1000000
         self.min_trade_size = 10
         self.max_trade_size = 50
         self.risk_per_trade = 2.0
         self.max_position_size = 0.35
-        self.momentum_score_threshold = 60
-    
-        # استدعاء get_all_trading_symbols بعد تعيين min_daily_volume
-        self.symbols = self.get_all_trading_symbols()
-        self.stable_coins = ['USDT', 'BUSD', 'USDC']
-    
+        self.momentum_score_threshold = 50  # خفضتها لدخول أسرع
+        
         self.active_trades = {}
         self.last_scan_time = datetime.now()
         self.min_profit_threshold = 0.003
-    
+        
+        # جديد: تهيئة نموذج XGBoost
         self.ml_model = None
-        self.train_ml_model()
+        self.train_ml_model()  # تدريب النموذج عند التهيئة
+
         logger.info("✅ تم تهيئة بوت صائد الصاعدات المتقدم بنجاح")
 
+
+    def get_all_trading_symbols(self):
+        try:
+            # القائمة الأولية الموسعة
+            important_symbols = [
+                "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
+                "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
+                "DOGEUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT",
+                "INJUSDT", "RUNEUSDT", "APTUSDT", "ARBUSDT", "OPUSDT",
+                "TRXUSDT", "ALGOUSDT", "VETUSDT", "HBARUSDT", "FTMUSDT",
+                "EGLDUSDT", "XMRUSDT", "GALAUSDT"  # العملات المقترحة الجديدة
+            ]
+            logger.info(f"🔸 استخدام القائمة الأولية الموسعة: {len(important_symbols)} عملة")
+
+            # محاولة جلب رموز ديناميكية إضافية
+            tickers = self.get_multiple_tickers(important_symbols)
+            dynamic_symbols = []
+            for ticker in tickers:
+                symbol = ticker['symbol']
+                if float(ticker['volume']) * float(ticker['weightedAvgPrice']) > self.min_daily_volume:
+                    dynamic_symbols.append(symbol)
+
+            # دمج القائمتين (إزالة التكرار)
+            all_symbols = list(set(important_symbols + dynamic_symbols))
+            logger.info(f"🔸 إجمالي الرموز بعد الدمج: {len(all_symbols)}")
+            return all_symbols if all_symbols else important_symbols  # الرجوع إلى القائمة الأولية إذا فشل الجلب
+        except Exception as e:
+            logger.error(f"خطأ في جلب الرموز: {e}")
+            logger.info("🔄 الرجوع إلى القائمة الأولية الموسعة")
+            return important_symbols
     
     def safe_binance_request(self, func, *args, **kwargs):
         if not self.circuit_breaker.can_proceed():
@@ -482,6 +495,7 @@ class MomentumHunterBot:
             return None
 
     async def fetch_ticker_async(self, symbol, session):
+        """جلب تيكر بشكل غير متزامن باستخدام aiohttp"""
         try:
             url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
             async with session.get(url, timeout=10) as response:
@@ -498,20 +512,22 @@ class MomentumHunterBot:
             return None
 
     async def get_multiple_tickers_async(self, symbols):
+        """جلب بيانات التيكرز لعدة رموز بشكل غير متزامن"""
         async with aiohttp.ClientSession() as session:
             tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
             tickers = await asyncio.gather(*tasks, return_exceptions=True)
             return [ticker for ticker in tickers if ticker is not None]
 
     def get_multiple_tickers(self, symbols):
+        """واجهة متزامنة لجلب التيكرز"""
         try:
-            loop = asyncio.new_event_loop()
+            loop = asyncio.new_event_loop()  # إنشاء حلقة حدث جديدة
             asyncio.set_event_loop(loop)
             return loop.run_until_complete(self.get_multiple_tickers_async(symbols))
         except Exception as e:
             logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
             return []
-
+    
     def get_account_balance(self):
         try:
             account = self.safe_binance_request(self.client.get_account)
@@ -520,12 +536,16 @@ class MomentumHunterBot:
                 free = float(asset['free'])
                 locked = float(asset['locked'])
                 if free + locked > 0:
-                    balances[asset['asset']] = {'free': free, 'locked': locked, 'total': free + locked}
+                    balances[asset['asset']] = {
+                        'free': free,
+                        'locked': locked,
+                        'total': free + locked
+                    }
             return balances
         except Exception as e:
             logger.error(f"خطأ في جلب الرصيد: {e}")
             return {}
-
+    
     def get_current_price(self, symbol):
         cache_key = f"price_{symbol}"
         if cache_key in self.cache:
@@ -538,18 +558,25 @@ class MomentumHunterBot:
         except Exception as e:
             logger.error(f"خطأ في جلب سعر {symbol}: {e}")
             return None
-
+    
     def get_historical_data(self, symbol, interval='15m', limit=100):
         cache_key = f"hist_{symbol}_{interval}_{limit}"
         if cache_key in self.cache:
             return self.cache[cache_key]
         try:
-            klines = self.safe_binance_request(self.client.get_klines, symbol=symbol, interval=interval, limit=limit)
+            klines = self.safe_binance_request(self.client.get_klines, 
+                                              symbol=symbol, 
+                                              interval=interval, 
+                                              limit=limit)
             data = []
             for k in klines:
                 data.append({
-                    'timestamp': k[0], 'open': float(k[1]), 'high': float(k[2]),
-                    'low': float(k[3]), 'close': float(k[4]), 'volume': float(k[5])
+                    'timestamp': k[0],
+                    'open': float(k[1]),
+                    'high': float(k[2]),
+                    'low': float(k[3]),
+                    'close': float(k[4]),
+                    'volume': float(k[5])
                 })
             df = pd.DataFrame(data)
             self.cache[cache_key] = df
@@ -557,20 +584,22 @@ class MomentumHunterBot:
         except Exception as e:
             logger.error(f"خطأ في جلب البيانات لـ {symbol}: {e}")
             return None
-
+    
     def calculate_adx(self, df, period=14):
         high, low, close = df['high'], df['low'], df['close']
         plus_dm = high.diff()
         minus_dm = -low.diff()
         plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
         minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
-        tr = pd.concat([(high - low), (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+        tr = pd.concat([(high - low),
+                        (high - close.shift()).abs(),
+                        (low - close.shift()).abs()], axis=1).max(axis=1)
         atr_series = tr.ewm(alpha=1/period, adjust=False).mean()
         plus_di = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / (atr_series + 1e-12))
         minus_di = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / (atr_series + 1e-12))
         dx = (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-12)) * 100
         return dx.ewm(alpha=1/period, adjust=False).mean()
-
+    
     def update_ema(self, previous_ema, new_price, span):
         alpha = 2 / (span + 1)
         return alpha * new_price + (1 - alpha) * previous_ema
@@ -621,8 +650,9 @@ class MomentumHunterBot:
         except Exception as e:
             logger.error(f"خطأ في حساب المؤشرات: {e}")
             return data
-
+    
     def train_ml_model(self):
+        """تدريب نموذج XGBoost بناءً على بيانات الصفقات السابقة"""
         try:
             trades = list(self.mongo_manager.db['trades'].find({'status': 'completed'}))
             if len(trades) < 10:
@@ -647,12 +677,114 @@ class MomentumHunterBot:
             logger.info("✅ تم تدريب نموذج XGBoost بنجاح")
         except Exception as e:
             logger.error(f"خطأ في تدريب النموذج: {e}")
-            
 
+    def calculate_momentum_score(self, symbol):
+        try:
+            data = self.get_historical_data(symbol, '15m', 100)
+            if data is None or len(data) < 50:
+                return 0, {}
+            
+            data = self.calculate_technical_indicators(data)
+            latest = data.iloc[-1]
+            prev = data.iloc[-2]
+            
+            score = 0
+            details = {}
+            
+            # ديناميكي: إضافة نقاط لـ breakout إذا تجاوز السعر EMA100 بنسبة 1% (دخول سريع)
+            if latest['close'] > latest['ema100'] * 1.01:
+                score += 10
+                details['breakout'] = 'إيجابي'
+            
+            # شرط trend أكثر حساسية للكشف عن صعود سريع
+            if latest['ema21'] > latest['ema50'] and latest['ema50'] > latest['ema100']:
+                score += self.WEIGHTS['trend']
+                details['trend'] = 'صاعد قوي'
+            elif latest['ema21'] > latest['ema50']:
+                score += self.WEIGHTS['trend'] * 0.6
+                details['trend'] = 'صاعد'
+            else:
+                details['trend'] = 'هابط'
+                return 0, details
+            
+            # تقاطع EMA أكثر حساسية (استخدام EMA8 وEMA21 فقط)
+            window = data.iloc[max(0, len(data)-4):]
+            for i in range(1, len(window)):
+                if window['ema8'].iat[i-1] <= window['ema21'].iat[i-1] and window['ema8'].iat[i] > window['ema21'].iat[i]:
+                    score += self.WEIGHTS['crossover']
+                    details['crossover'] = 'إيجابي'
+                    break
+            
+            # تغير سعر أكثر حساسية (2% في 5 شمعات، 3% في 15)
+            price_change_5 = ((latest['close'] - data.iloc[-5]['close']) / data.iloc[-5]['close']) * 100 if len(data) >= 5 else 0
+            price_change_15 = ((latest['close'] - data.iloc[-15]['close']) / data.iloc[-15]['close']) * 100 if len(data) >= 15 else 0
+            
+            details['price_change_5candles'] = round(price_change_5, 2)
+            details['price_change_15candles'] = round(price_change_15, 2)
+            
+            if price_change_5 >= 1.5 and price_change_15 >= 2.5:  # خفضت العتبات لدخول أسرع
+                score += self.WEIGHTS['price_change']
+            
+            # حجم أكثر حساسية (ratio >= 1.5)
+            volume_ratio = latest['volume_ratio']
+            details['volume_ratio'] = round(volume_ratio, 2) if not pd.isna(volume_ratio) else 1
+            
+            if volume_ratio >= 1.5:
+                score += self.WEIGHTS['volume']
+            
+            details['rsi'] = round(latest['rsi'], 2) if not pd.isna(latest['rsi']) else 50
+            
+            if 35 <= latest['rsi'] <= 60:  # خفضت العتبة لدخول في صعود مبكر
+                score += self.WEIGHTS['rsi']
+            
+            if latest['macd'] > latest['macd_signal'] and latest['macd_hist'] > 0:
+                score += self.WEIGHTS['macd']
+                details['macd'] = 'إيجابي'
+            
+            details['adx'] = round(latest['adx'], 2) if not pd.isna(latest['adx']) else 0
+            if latest['adx'] >= 20:  # خفضت العتبة للكشف عن اتجاه أقوى مبكرًا
+                score += self.WEIGHTS['adx']
+                details['adx_strength'] = 'قوي'
+            elif latest['adx'] >= 15:
+                score += self.WEIGHTS['adx'] * 0.6
+                details['adx_strength'] = 'متوسط'
+            
+            if latest['close'] > latest['middle_bb']:
+                score += self.WEIGHTS['bollinger']
+                details['bollinger'] = 'فوق المتوسط'
+            
+            details['current_price'] = latest['close']
+            details['atr'] = latest['atr'] if not pd.isna(latest['atr']) else 0
+            details['atr_percent'] = round((latest['atr'] / latest['close']) * 100, 2) if latest['atr'] > 0 else 0
+            
+            # دمج XGBoost
+            if self.ml_model:
+                try:
+                    input_data = np.array([[
+                        score,
+                        details.get('rsi', 50),
+                        details.get('adx', 0),
+                        details.get('volume_ratio', 1),
+                        details.get('atr_percent', 0)
+                    ]])
+                    pred_prob = self.ml_model.predict_proba(input_data)[0][1]  # احتمالية النجاح
+                    score += pred_prob * 20  # إضافة نقاط إضافية (حد أقصى 20)
+                    score = min(score, 100)
+                    details['ml_prediction'] = round(pred_prob * 100, 2)
+                    logger.info(f"🔮 تنبؤ XGBoost لـ {symbol}: {details['ml_prediction']}%")
+                except Exception as e:
+                    logger.error(f"خطأ في تنبؤ XGBoost لـ {symbol}: {e}")
+
+            return min(score, 100), details
+            
+        except Exception as e:
+            logger.error(f"خطأ في حساب زخم {symbol}: {e}")
+            return 0, {}
+    
     async def find_best_opportunities(self):
         opportunities = []
         rejected_symbols = []
-        symbols_to_analyze = self.symbols[:100]
+        symbols_to_analyze = self.symbols[:100]  # تحليل أول 100 رمز لتقليل الطلبات
 
         async def process_symbol(symbol):
             try:
@@ -661,13 +793,13 @@ class MomentumHunterBot:
                 if not ticker:
                     return None
                 daily_volume = float(ticker['volume']) * float(ticker['lastPrice'])
-
+    
                 if daily_volume < self.min_daily_volume:
                     rejected_symbols.append({'symbol': symbol, 'reason': f'حجم غير كافي: {daily_volume:,.0f}'})
                     return None
-
+    
                 momentum_score, details = self.calculate_momentum_score(symbol)
-
+    
                 if momentum_score >= self.momentum_score_threshold:
                     opportunity = {
                         'symbol': symbol,
@@ -680,19 +812,21 @@ class MomentumHunterBot:
                 else:
                     rejected_symbols.append({'symbol': symbol, 'reason': f'نقاط غير كافية: {momentum_score}'})
                     return None
+        
             except Exception as e:
                 logger.error(f"خطأ في تحليل {symbol}: {e}")
                 return None
 
+        # Process symbols concurrently
         async with aiohttp.ClientSession() as session:
             tasks = [process_symbol(symbol) for symbol in symbols_to_analyze]
             results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error(f"Error processing symbol: {result}")
-            elif result is not None:
-                opportunities.append(result)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Error processing symbol: {result}")
+                elif result is not None:
+                    opportunities.append(result)
 
         opportunities.sort(key=lambda x: x['score'], reverse=True)
 
@@ -702,7 +836,7 @@ class MomentumHunterBot:
             logger.info(f"🔍 تم رفض {len(rejected_symbols)} عملة. أفضل العملات المرفوضة: {top_rejected}")
 
         return opportunities
-
+    
     def check_correlation(self, symbol, active_symbols):
         if not active_symbols:
             return True
@@ -716,14 +850,15 @@ class MomentumHunterBot:
                 logger.info(f"تخطي {symbol} بسبب ارتباط عالي ({correlation:.2f}) مع {active_symbol}")
                 return False
         return True
-
+    
     def calculate_position_size(self, opportunity, usdt_balance):
         try:
             score = opportunity['score']
             current_price = opportunity['details']['current_price']
             atr = opportunity['details']['atr']
             atr_percent = opportunity['details']['atr_percent']
-        
+            
+            # جعلت risk_pct ديناميكية بناءً على الدرجة (أعلى للفرص القوية)
             if score >= 80:
                 risk_pct = 0.007
                 risk_level = "استثنائية 🚀"
@@ -733,43 +868,38 @@ class MomentumHunterBot:
             elif score >= 65:
                 risk_pct = 0.005
                 risk_level = "قوية 👍"
-            elif score >= 60:
+            elif score >= 50:  # توسيع النطاق لدخول أسرع
                 risk_pct = 0.004
                 risk_level = "جيدة 🔄"
             else:
                 return 0, {'risk_level': 'ضعيفة - لا تتداول'}
-        
+            
             volatility_factor = min(1.0, 5.0 / atr_percent) if atr_percent > 0 else 1.0
-            stop_distance = atr * 2.5
+            stop_distance = atr * 1.5  # خفضت المضاعف لوقف خسارة أسرع
             risk_amount = usdt_balance * risk_pct * volatility_factor
             position_size_usdt = min(risk_amount / (stop_distance / current_price), self.max_trade_size)
             position_size_usdt = max(self.min_trade_size, position_size_usdt)
-        
+            
             min_profit_needed = position_size_usdt * self.min_profit_threshold
             potential_profit = (opportunity['details'].get('price_change_5candles', 0) / 100) * position_size_usdt
-        
+            
             if potential_profit < min_profit_needed:
                 logger.info(f"تخطي {opportunity['symbol']} - الربح المتوقع {potential_profit:.2f} أقل من الحد الأدنى {min_profit_needed:.2f}")
                 return 0, {'risk_level': 'ربح غير كافي'}
-    
+        
             size_info = {
                 'size_usdt': position_size_usdt,
                 'risk_percentage': (position_size_usdt / usdt_balance) * 100 if usdt_balance > 0 else 0,
                 'risk_level': risk_level,
                 'min_trade_size': self.min_trade_size
             }
-    
-            # إضافة فحص على risk_percentage (من الرد السابق)
-            if size_info['risk_percentage'] > 20.0:  # حد أقصى لتجنب مخاطرة عالية مثل 51%
-                logger.warning(f"تخطي {opportunity['symbol']} - نسبة المخاطرة عالية جدًا ({size_info['risk_percentage']:.2f}%)")
-                return 0, {'risk_level': 'مخاطرة عالية'}
         
             logger.info(f"📊 حجم الصفقة لـ {opportunity['symbol']}: "
                        f"${position_size_usdt:.2f} - "
                        f"التقييم: {risk_level}")
-    
+        
             return position_size_usdt, size_info
-    
+        
         except Exception as e:
             logger.error(f"خطأ في حساب حجم الصفقة: {e}")
             return 0, {'risk_level': 'خطأ في الحساب'}
@@ -829,41 +959,45 @@ class MomentumHunterBot:
                     self.close_trade(symbol, current_price, 'take_profit')
                     continue
                 
-                if net_pnl_percent >= 5.0:
-                    new_sl = max(trade['stop_loss'], current_price - (trade['atr'] * 1.5))
+                # خفضت عتبة التحريك إلى 2% لخروج أسرع
+                if net_pnl_percent >= 2.0:
+                    new_sl = max(trade['stop_loss'], current_price - (trade['atr'] * 1.0))  # مضاعف ATR أقل لوقف أسرع
                     if new_sl > trade['stop_loss']:
                         trade['stop_loss'] = new_sl
                         logger.info(f"📈 تم تحديث وقف الخسارة لـ {symbol} إلى ${new_sl:.4f}")
                         self.mongo_manager.update_trade_stop_loss(symbol, new_sl)
                         
+                # خفضت الوقت إلى 2 ساعات لخروج أسرع
                 trade_duration_hours = trade_age / 3600
-                if trade_duration_hours > 6 and net_pnl_percent < 0.5:
+                if trade_duration_hours > 2 and net_pnl_percent < 0.5:
                     self.close_trade(symbol, current_price, 'timeout')
                     continue
                 
+                # إضافة شرط خروج سريع عند تقاطع EMA عكسي أو RSI >70 (شراء زائد)
                 data = self.get_historical_data(symbol, '15m', 100)
                 if data is None or len(data) < 50:
                     continue
                 data = self.calculate_technical_indicators(data)
                 latest = data.iloc[-1]
-                if latest['ema8'] < latest['ema21'] and latest['macd'] < latest['macd_signal']:
+                if latest['ema8'] < latest['ema21'] or latest['macd'] < latest['macd_signal'] or latest['rsi'] > 70:
                     self.close_trade(symbol, current_price, 'trend_weakness')
                     continue
+                
             except Exception as e:
                 logger.error(f"خطأ في إدارة صفقة {symbol}: {e}")
 
     def execute_trade(self, symbol, opportunity):
         current_price = opportunity['details']['current_price']
         atr = opportunity['details']['atr']
-    
+        
         try:
             if symbol in self.active_trades:
                 logger.info(f"⏭️ تخطي {symbol} - صفقة نشطة موجودة")
                 return False
-        
+            
             if not self.check_correlation(symbol, list(self.active_trades.keys())):
                 return False
-    
+        
             balances = self.get_account_balance()
             usdt_balance = balances.get('USDT', {}).get('free', 0)
         
@@ -872,7 +1006,7 @@ class MomentumHunterBot:
                 return False
         
             position_size_usdt, size_info = self.calculate_position_size(opportunity, usdt_balance)
-        
+            
             if position_size_usdt < self.min_trade_size:
                 logger.info(f"📉 تخطي {symbol} - حجم الصفقة صغير: {position_size_usdt:.2f}")
                 return False
@@ -887,7 +1021,7 @@ class MomentumHunterBot:
             symbol_info = self.safe_binance_request(self.client.get_symbol_info, symbol=symbol)
             if not symbol_info:
                 return False
-            
+                
             lot_size = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
             if lot_size:
                 min_qty = float(lot_size['minQty'])
@@ -895,12 +1029,12 @@ class MomentumHunterBot:
                     logger.warning(f"⚖️ الكمية {quantity} أقل من الحد الأدنى {min_qty} لـ {symbol}")
                     return False
         
-            atr_multiplier = 2.5
-            risk_reward_ratio = 3.0
-        
+            atr_multiplier = 1.5  # خفضت لوقف خسارة أسرع
+            risk_reward_ratio = 2.0  # خفضت لأخذ ربح أسرع
+            
             stop_loss_price = current_price - (atr * atr_multiplier)
             take_profit_price = current_price + (risk_reward_ratio * (current_price - stop_loss_price))
-        
+            
             min_sl_distance = current_price * 0.005
             if (current_price - stop_loss_price) < min_sl_distance:
                 stop_loss_price = current_price - min_sl_distance
@@ -909,17 +1043,17 @@ class MomentumHunterBot:
             if self.dry_run:
                 logger.info(f"🧪 محاكاة صفقة لـ {symbol}: حجم {position_size_usdt:.2f}")
                 return True
-        
+            
             order = self.safe_binance_request(self.client.order_market_buy,
                                          symbol=symbol,
                                          quantity=quantity)
-         
+        
             if not order or order['status'] != 'FILLED':
                 logger.error(f"❌ فشل تنفيذ أمر الشراء لـ {symbol}")
                 return False
-            
+                
             avg_fill_price = float(order['fills'][0]['price']) if order['fills'] else current_price
-        
+            
             trade_data = {
                 'symbol': symbol,
                 'type': 'buy',
@@ -940,47 +1074,13 @@ class MomentumHunterBot:
             }
         
             self.active_trades[symbol] = trade_data
-            # محاولة حفظ مرتين إذا فشل
-            saved = self.mongo_manager.save_trade(trade_data)
-            if not saved:
-                logger.warning(f"محاولة إعادة حفظ الصفقة لـ {symbol}")
-                saved = self.mongo_manager.save_trade(trade_data)
-        
-            if saved:
-                logger.info(f"✅ تم حفظ الصفقة الجديدة لـ {symbol} في MongoDB")
-            else:
-                logger.error(f"❌ فشل حفظ الصفقة الجديدة لـ {symbol} في MongoDB بعد محاولتين")
-        
-            if self.notifier:
-                message = (
-                    f"🚀 <b>صفقة جديدة - إستراتيجية محسنة</b>\n\n"
-                    f"• العملة: {symbol}\n"
-                    f"• السعر: ${avg_fill_price:.4f}\n"
-                    f"• الكمية: {quantity:.6f}\n"
-                    f"• الحجم: ${quantity * avg_fill_price:.2f}\n"
-                    f"• النتيجة: {opportunity['score']}/100\n"
-                    f"• مستوى المخاطرة: {size_info.get('risk_level', '')}\n"
-                    f"• نسبة المخاطرة: {size_info.get('risk_percentage', 0):.1f}%\n"
-                    f"• وقف الخسارة: ${stop_loss_price:.4f}\n"
-                    f"• أخذ الربح: ${take_profit_price:.4f}\n"
-                    f"• نسبة العائد: {risk_reward_ratio}:1\n"
-                    f"• ATR: {opportunity['details']['atr_percent']}%\n"
-                    f"• هامش الأمان: {atr_multiplier} ATR\n\n"
-                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                sent = self.notifier.send_message(message, 'trade_execution')
-                if sent:
-                    logger.info(f"✅ تم إرسال إشعار Telegram لشراء {symbol}")
-                else:
-                    logger.error(f"❌ فشل إرسال إشعار Telegram لشراء {symbol}")
-            else:
-                logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لـ {symbol}")
+            self.mongo_manager.save_trade(trade_data)
         
             logger.info(f"✅ تم شراء {symbol} - الحجم: ${position_size_usdt:.2f}")
-         
+            
             time.sleep(2)
             return True
-    
+        
         except Exception as e:
             logger.error(f"❌ خطأ في تنفيذ صفقة {symbol}: {e}")
             return False
@@ -988,17 +1088,17 @@ class MomentumHunterBot:
     def close_trade(self, symbol, exit_price, reason):
         try:
             trade = self.active_trades[symbol]
-        
+            
             gross_pnl = (exit_price - trade['entry_price']) * trade['quantity']
             estimated_fees = trade['trade_size'] * 0.002
             net_pnl = gross_pnl - estimated_fees
             pnl_percent = (net_pnl / trade['trade_size']) * 100
-        
+            
             min_expected_pnl = trade['trade_size'] * trade.get('min_profit_threshold', 0.002)
             if abs(net_pnl) < min_expected_pnl and reason != 'stop_loss':
                 logger.info(f"🔄 إلغاء إغلاق {symbol} - الربح/الخسارة أقل من الحد الأدنى")
                 return False
-        
+            
             trade['exit_price'] = exit_price
             trade['exit_time'] = datetime.now()
             trade['profit_loss'] = net_pnl
@@ -1006,44 +1106,13 @@ class MomentumHunterBot:
             trade['status'] = 'completed'
             trade['exit_reason'] = reason
             trade['fees_estimated'] = estimated_fees
-        
-            # محاولة حفظ مرتين إذا فشل
-            saved = self.mongo_manager.save_trade(trade)
-            if not saved:
-                logger.warning(f"محاولة إعادة حفظ إغلاق الصفقة لـ {symbol}")
-                saved = self.mongo_manager.save_trade(trade)
-        
-            if saved:
-                logger.info(f"✅ تم حفظ إغلاق الصفقة لـ {symbol} في MongoDB")
-            else:
-                logger.error(f"❌ فشل حفظ إغلاق الصفقة لـ {symbol} في MongoDB بعد محاولتين")
-        
-            if self.notifier:
-                emoji = "✅" if net_pnl > 0 else "❌"
-                message = (
-                    f"{emoji} <b>إغلاق الصفقة</b>\n\n"
-                    f"• العملة: {symbol}\n"
-                    f"• السبب: {self.translate_exit_reason(reason)}\n"
-                    f"• سعر الدخول: ${trade['entry_price']:.4f}\n"
-                    f"• سعر الخروج: ${exit_price:.4f}\n"
-                    f"• الربح/الخسارة: ${net_pnl:.2f} ({pnl_percent:+.2f}%)\n"
-                    f"• الرسوم التقديرية: ${estimated_fees:.2f}\n"
-                    f"• المدة: {(trade['exit_time'] - trade['timestamp']).total_seconds() / 60:.1f} دقيقة\n"
-                    f"• المخاطرة: ${trade['position_size_usdt']:.2f}\n\n"
-                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                sent = self.notifier.send_message(message, 'trade_close')
-                if sent:
-                    logger.info(f"✅ تم إرسال إشعار Telegram لإغلاق {symbol}")
-                else:
-                    logger.error(f"❌ فشل إرسال إشعار Telegram لإغلاق {symbol}")
-            else:
-                logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لإغلاق {symbol}")
-        
+            
+            self.mongo_manager.save_trade(trade)
+            
             logger.info(f"🔚 تم إغلاق {symbol} بـ {reason}: ${net_pnl:.2f} ({pnl_percent:+.2f}%)")
             del self.active_trades[symbol]
             return True
-    
+            
         except Exception as e:
             logger.error(f"❌ خطأ في إغلاق صفقة {symbol}: {e}")
             return False
@@ -1057,7 +1126,7 @@ class MomentumHunterBot:
             'trend_weakness': 'ضعف الاتجاه'
         }
         return reasons.get(reason, reason)
-
+    
     def auto_convert_stuck_assets(self):
         try:
             balances = self.get_account_balance()
@@ -1074,10 +1143,11 @@ class MomentumHunterBot:
                         self.convert_to_usdt(asset, balance['free'])
             
             return usdt_value
+            
         except Exception as e:
             logger.error(f"خطأ في تحويل الأصول: {e}")
             return 0
-
+    
     def convert_to_usdt(self, asset, amount):
         try:
             if asset == 'USDT':
@@ -1100,15 +1170,16 @@ class MomentumHunterBot:
             if order and order['status'] == 'FILLED':
                 logger.info(f"تم تحويل {quantity} {asset} إلى USDT")
                 return True
+                
         except Exception as e:
             logger.error(f"خطأ في تحويل {asset} إلى USDT: {e}")
         return False
-
+    
     def get_performance_stats(self):
         return self.mongo_manager.get_performance_stats()
-
+    
     def get_current_opportunities(self):
-        opportunities = asyncio.run(self.find_best_opportunities())
+        opportunities = self.find_best_opportunities()
         return {
             'total_opportunities': len(opportunities),
             'opportunities': [{
@@ -1120,7 +1191,7 @@ class MomentumHunterBot:
             } for opp in opportunities[:5]],
             'scan_time': datetime.now().isoformat()
         }
-
+    
     def backtest_strategy(self, symbol, start_date, end_date):
         try:
             data = self.get_historical_data(symbol, '15m', 1000)
@@ -1138,7 +1209,7 @@ class MomentumHunterBot:
         except Exception as e:
             logger.error(f"خطأ في الباكتيست: {e}")
             return {}
-
+    
     def shutdown(self):
         logger.info("🛑 إيقاف البوت...")
         for symbol in list(self.active_trades.keys()):
@@ -1147,126 +1218,7 @@ class MomentumHunterBot:
                 self.close_trade(symbol, current_price, 'shutdown')
         if self.notifier:
             self.notifier.send_message("🛑 <b>إيقاف البوت</b>", 'shutdown')
-
-    def get_all_trading_symbols(self):
-        try:
-            important_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", 
-                               "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
-                               "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
-                               "DOGEUSDT", "MATICUSDT", "ATOMUSDT", "NEARUSDT", "FILUSDT",
-                               "INJUSDT", "RUNEUSDT", "APTUSDT", "ARBUSDT", "OPUSDT",
-                               "TRXUSDT", "ALGOUSDT", "VETUSDT", "HBARUSDT", "FTMUSDT",
-                               "EGLDUSDT", "XMRUSDT", "GALAUSDT"]
-            logger.info(f"🔸 استخدام القائمة الأولية الموسعة: {len(important_symbols)} عملة")
-
-            tickers = self.get_multiple_tickers(important_symbols)
-            logger.debug(f"تم جلب {len(tickers)} تيكر من Binance")
-            dynamic_symbols = [t['symbol'] for t in tickers if float(t['volume']) * float(t['weightedAvgPrice']) > self.min_daily_volume]
-
-            all_symbols = list(set(important_symbols + dynamic_symbols))
-            logger.info(f"🔸 إجمالي الرموز بعد الدمج: {len(all_symbols)}")
-            return all_symbols if all_symbols else important_symbols
-        except Exception as e:
-            logger.error(f"خطأ في جلب الرموز: {e}", exc_info=True)
-            logger.info("🔄 الرجوع إلى القائمة الأولية الموسعة")
-            return important_symbols
-
-    def calculate_momentum_score(self, symbol):
-        try:
-            data = self.get_historical_data(symbol, '15m', 100)
-            if data is None or len(data) < 50:
-                logger.warning(f"بيانات غير كافية لـ {symbol}: أقل من 50 شمعة")
-                return 0, {}
-
-            data = self.calculate_technical_indicators(data)
-            latest = data.iloc[-1]
-            prev = data.iloc[-2]
-        
-            score = 0
-            details = {}
-        
-            logger.debug(f"تحليل {symbol}: EMA21={latest['ema21']:.2f}, EMA50={latest['ema50']:.2f}, EMA100={latest['ema100']:.2f}")
-            if latest['ema21'] > latest['ema50'] and latest['ema50'] > latest['ema100']:
-                score += self.WEIGHTS['trend']
-                details['trend'] = 'صاعد قوي'
-            elif latest['ema21'] > latest['ema50']:
-                score += self.WEIGHTS['trend'] * 0.6
-                details['trend'] = 'صاعد'
-            else:
-                details['trend'] = 'هابط'
-                logger.debug(f"تخطي {symbol} بسبب اتجاه هابط")
-                return 0, details
-        
-            window = data.iloc[max(0, len(data)-4):]
-            for i in range(1, len(window)):
-                if window['ema8'].iat[i-1] <= window['ema21'].iat[i-1] and window['ema8'].iat[i] > window['ema21'].iat[i]:
-                    score += self.WEIGHTS['crossover']
-                    details['crossover'] = 'إيجابي'
-                    logger.debug(f"تقاطع إيجابي لـ {symbol}")
-                    break
-        
-            price_change_5 = ((latest['close'] - data.iloc[-5]['close']) / data.iloc[-5]['close']) * 100 if len(data) >= 5 else 0
-            price_change_15 = ((latest['close'] - data.iloc[-15]['close']) / data.iloc[-15]['close']) * 100 if len(data) >= 15 else 0
-        
-            details['price_change_5candles'] = round(price_change_5, 2)
-            details['price_change_15candles'] = round(price_change_15, 2)
-            logger.debug(f"تغير السعر {symbol}: 5 شمعات={price_change_5:.2f}%, 15 شمعة={price_change_15:.2f}%")
-        
-            if price_change_5 >= 2.0 and price_change_15 >= 3.0:
-                score += self.WEIGHTS['price_change']
-        
-            volume_ratio = latest['volume_ratio']
-            details['volume_ratio'] = round(volume_ratio, 2) if not pd.isna(volume_ratio) else 1
-            logger.debug(f"نسبة الحجم {symbol}: {volume_ratio:.2f}")
-        
-            if volume_ratio >= 1.8:
-                score += self.WEIGHTS['volume']
-        
-            details['rsi'] = round(latest['rsi'], 2) if not pd.isna(latest['rsi']) else 50
-            logger.debug(f"RSI {symbol}: {details['rsi']}")
-        
-            if 40 <= latest['rsi'] <= 65:
-                score += self.WEIGHTS['rsi']
-        
-            if latest['macd'] > latest['macd_signal'] and latest['macd_hist'] > 0:
-                score += self.WEIGHTS['macd']
-                details['macd'] = 'إيجابي'
-                logger.debug(f"MACD إيجابي لـ {symbol}")
-        
-            details['adx'] = round(latest['adx'], 2) if not pd.isna(latest['adx']) else 0
-            logger.debug(f"ADX {symbol}: {details['adx']}")
-            if latest['adx'] >= 25:
-                score += self.WEIGHTS['adx']
-                details['adx_strength'] = 'قوي'
-            elif latest['adx'] >= 20:
-                score += self.WEIGHTS['adx'] * 0.6
-                details['adx_strength'] = 'متوسط'
-        
-            if latest['close'] > latest['middle_bb']:
-                score += self.WEIGHTS['bollinger']
-                details['bollinger'] = 'فوق المتوسط'
-        
-            details['current_price'] = latest['close']
-            details['atr'] = latest['atr'] if not pd.isna(latest['atr']) else 0
-            details['atr_percent'] = round((latest['atr'] / latest['close']) * 100, 2) if latest['atr'] > 0 else 0
-        
-            if self.ml_model:
-                try:
-                    input_data = np.array([[score, details.get('rsi', 50), details.get('adx', 0), details.get('volume_ratio', 1), details.get('atr_percent', 0)]])
-                    pred_prob = self.ml_model.predict_proba(input_data)[0][1]
-                    score += pred_prob * 20
-                    score = min(score, 100)
-                    details['ml_prediction'] = round(pred_prob * 100, 2)
-                    logger.debug(f"تنبؤ XGBoost لـ {symbol}: {details['ml_prediction']}%")
-                except Exception as e:
-                    logger.error(f"خطأ في تنبؤ XGBoost لـ {symbol}: {e}")
-
-            logger.info(f"النتيجة النهائية لـ {symbol}: {score}/100")
-            return min(score, 100), details
-        except Exception as e:
-            logger.error(f"خطأ في حساب زخم {symbol}: {e}", exc_info=True)
-            return 0, {}
-
+    
     def run_trading_cycle(self):
         try:
             logger.info("🔄 بدء دورة التداول الجديدة")
@@ -1276,17 +1228,17 @@ class MomentumHunterBot:
                 return
     
             usdt_balance = self.auto_convert_stuck_assets()
-            logger.info(f"رصيد USDT الحالي: ${usdt_balance:.2f}")
     
             if usdt_balance < self.min_trade_size:
                 logger.warning(f"رصيد USDT غير كافي: {usdt_balance:.2f}")
                 return
     
-            self.train_ml_model()
+            self.train_ml_model()  # إعادة تدريب نموذج XGBoost
     
             self.manage_active_trades()
     
             if len(self.active_trades) < 3:
+                # Use asyncio.run to call the async method
                 opportunities = asyncio.run(self.find_best_opportunities())
         
                 if opportunities:
@@ -1297,14 +1249,14 @@ class MomentumHunterBot:
                             time.sleep(1)
                 else:
                     logger.info("🔍 لم يتم العثور على فرص مناسبة")
-                    logger.debug("تفاصيل الرفض: أعلى درجات الرموز المرفوضة تقل عن 60")
             else:
                 logger.info(f"⏸️ عدد الصفقات النشطة ({len(self.active_trades)}) - تخطي البحث عن فرص جديدة")
     
             self.last_scan_time = datetime.now(damascus_tz)
             logger.info(f"✅ اكتملت دورة التداول في {self.last_scan_time}")
+    
         except Exception as e:
-            logger.error(f"❌ خطأ في دورة التداول: {e}", exc_info=True)
+            logger.error(f"❌ خطأ في دورة التداول: {e}")
             if self.notifier:
                 self.notifier.send_message(f"❌ <b>خطأ في دورة التداول</b>\n{e}", 'error')
     
@@ -1327,9 +1279,10 @@ class MomentumHunterBot:
                     f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 self.notifier.send_message(message, 'daily_report')
+                
         except Exception as e:
             logger.error(f"خطأ في إرسال التقرير اليومي: {e}")
-
+    
     def run_bot(self):
         logger.info("🚀 بدء تشغيل البوت بشكل مستمر")
         
@@ -1337,7 +1290,9 @@ class MomentumHunterBot:
             self.notifier.send_message("🚀 <b>بدء تشغيل البوت</b>\nتم تشغيل إستراتيجية الصعود المحسنة", 'startup')
         
         schedule.every(15).minutes.do(self.run_trading_cycle)
+        
         schedule.every(5).minutes.do(self.health_monitor.check_connections)
+        
         schedule.every(6).hours.do(self.send_daily_report)
         
         self.run_trading_cycle()
