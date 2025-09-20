@@ -482,6 +482,14 @@ class MomentumHunterBot:
         else:
             self.notifier = None
             logger.warning("⚠️ Telegram notifier not initialized - check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+            
+        self.active_trades = {}
+    
+        # ✅ تحميل الصفقات الموجودة عند التشغيل
+        self.sync_active_trades_with_db()
+        self.load_existing_trades()
+    
+        logger.info(f"✅ تم تحميل {len(self.active_trades)} صفقة مفتوحة")
         
         self.health_monitor = HealthMonitor(self)
     
@@ -515,6 +523,61 @@ class MomentumHunterBot:
                 logger.error("❌ فشل إرسال اختبار Telegram")
         else:
             logger.warning("⚠️ Notifier غير مفعل - لا يمكن إجراء الاختبار")
+            
+    def load_existing_trades(self):
+        """تحميل الصفقات المفتوحة الحالية من Binance"""
+        try:
+            # جلب جميع الأوامر المفتوحة
+            open_orders = self.safe_binance_request(self.client.get_open_orders)
+        
+            for order in open_orders:
+                if order['side'] == 'BUY' and order['status'] == 'FILLED':
+                    symbol = order['symbol']
+                
+                    # جلب تفاصيل الصفقة إذا كانت موجودة في MongoDB
+                    existing_trade = self.mongo_manager.db['trades'].find_one({
+                        'symbol': symbol,
+                        'status': 'open',
+                        'order_id': order['orderId']
+                    })
+                 
+                    if existing_trade:
+                        self.active_trades[symbol] = existing_trade
+                        logger.info(f"✅ تم تحميل الصفقة الموجودة: {symbol}")
+                    else:
+                        # إنشاء صفقة جديدة من البيانات المتاحة
+                        current_price = self.get_current_price(symbol)
+                        trade_data = {
+                            'symbol': symbol,
+                            'entry_price': float(order['price']),
+                            'quantity': float(order['executedQty']),
+                            'trade_size': float(order['executedQty']) * float(order['price']),
+                            'stop_loss': current_price * 0.98,  # وقف افتراضي
+                            'take_profit': current_price * 1.04,  # ربح افتراضي
+                            'timestamp': datetime.fromtimestamp(order['time'] / 1000),
+                            'status': 'open',
+                            'order_id': order['orderId']
+                        }
+                        self.active_trades[symbol] = trade_data
+                        self.mongo_manager.save_trade(trade_data)
+                        logger.info(f"✅ تم إنشاء صفقة جديدة من الأمر المفتوح: {symbol}")
+                    
+        except Exception as e:
+            logger.error(f"❌ خطأ في تحميل الصفقات الموجودة: {e}")
+            
+    def sync_active_trades_with_db(self):
+        """مزامنة الصفقات النشطة مع قاعدة البيانات"""
+        try:
+            # جلب جميع الصفقات المفتوحة من MongoDB
+            open_trades = list(self.mongo_manager.db['trades'].find({'status': 'open'}))
+        
+            for trade in open_trades:
+                symbol = trade['symbol']
+                self.active_trades[symbol] = trade
+                logger.info(f"✅ تم مزامنة الصفقة: {symbol}")
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في مزامنة الصفقات: {e}")
             
     def get_all_trading_symbols(self):
         try:
@@ -1094,7 +1157,6 @@ class MomentumHunterBot:
                 if data is not None and len(data) >= 5:
                     ema8 = data['close'].ewm(span=8, adjust=False).mean().iloc[-1]
                     ema21 = data['close'].ewm(span=21, adjust=False).mean().iloc[-1]
-                    
                     if ema8 < ema21:  # انعكاس مؤقت
                         # تأكد من استمرارية الانعكاس على 3 شمعات
                         data_5m = self.get_historical_data(symbol, '5m', 5)
@@ -1102,10 +1164,10 @@ class MomentumHunterBot:
                             ema8_last_3 = data_5m['close'].ewm(span=8, adjust=False).mean().iloc[-3:]
                             ema21_last_3 = data_5m['close'].ewm(span=21, adjust=False).mean().iloc[-3:]
         
-                        # ✅ الخروج فقط إذا استمر الانعكاس 3 شمعات متتالية
-                        if all(ema8_last_3 < ema21_last_3):
-                            self.close_trade(symbol, current_price, 'trend_reversal')
-                            continue
+                            # ✅ الخروج فقط إذا استمر الانعكاس 3 شمعات متتالية
+                            if all(ema8_last_3 < ema21_last_3):
+                                self.close_trade(symbol, current_price, 'trend_reversal')
+                                continue
                     
                 # إغلاق الصفقة إذا انخفض الربح عن الحد الأدنى للجزء المتبقي
                 if (trade.get('first_profit_taken', False) and 
@@ -1579,13 +1641,34 @@ class MomentumHunterBot:
                 
         except Exception as e:
             logger.error(f"خطأ في إرسال التقرير اليومي: {e}")
+            
+    def validate_active_trades(self):
+        """التحقق من أن الصفقات المفتوحة لا تزال صالحة"""
+        for symbol in list(self.active_trades.keys()):
+            try:
+                # التحقق من أن الصفقة لا تزال مفتوحة في Binance
+                order_info = self.safe_binance_request(self.client.get_order,
+                                                     symbol=symbol,
+                                                     orderId=self.active_trades[symbol]['order_id'])
+            
+                if order_info and order_info['status'] != 'FILLED':
+                    # الصفقة لم تعد مفتوحة
+                    logger.warning(f"⚠️ الصفقة {symbol} لم تعد مفتوحة - الإزالة من القائمة")
+                    del self.active_trades[symbol]
+                
+            except Exception as e:
+                logger.error(f"❌ خطأ في التحقق من صفقة {symbol}: {e}")
     
     def run_bot(self):
         logger.info("🚀 بدء تشغيل البوت بشكل مستمر")
+        
+        # ✅ مزامنة الصفقات عند البدء
+        self.sync_active_trades_with_db()
+        self.load_existing_trades()
     
         if self.notifier:
-            self.notifier.send_message("🚀 <b>بدء تشغيل البوت</b>\nتم تشغيل إستراتيجية الصعود المحسنة", 'startup')
-    
+            self.notifier.send_message(f"🚀 <b>بدء تشغيل البوت</b>\nتم تحميل {len(self.active_trades)} صفقة مفتوحة", 'startup')
+        
         schedule.every(15).minutes.do(self.run_trading_cycle)
     
         schedule.every(1).minute.do(self.track_open_trades)  # تتبع كل دقيقة
@@ -1595,6 +1678,8 @@ class MomentumHunterBot:
         schedule.every(6).hours.do(self.send_daily_report)
     
         self.run_trading_cycle()
+        schedule.every(30).minutes.do(self.sync_active_trades_with_db)
+        schedule.every(15).minutes.do(self.validate_active_trades)
     
         while True:
             try:
