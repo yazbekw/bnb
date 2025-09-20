@@ -1172,12 +1172,12 @@ class MomentumHunterBot:
                 logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لإغلاق {symbol}")
         
             logger.info(f"🔚 تم إغلاق {symbol} بـ {reason}: ${net_pnl:.2f} ({pnl_percent:+.2f}%)")
-                del self.active_trades[symbol]
-                return True
+            del self.active_trades[symbol]
+            return True
         
-            except Exception as e:
-                logger.error(f"❌ خطأ في إغلاق صفقة {symbol}: {e}")
-                return False
+        except Exception as e:
+            logger.error(f"❌ خطأ في إغلاق صفقة {symbol}: {e}")
+            return False
 
     def track_open_trades(self):
         if not self.active_trades:
