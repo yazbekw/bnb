@@ -1094,9 +1094,18 @@ class MomentumHunterBot:
                 if data is not None and len(data) >= 5:
                     ema8 = data['close'].ewm(span=8, adjust=False).mean().iloc[-1]
                     ema21 = data['close'].ewm(span=21, adjust=False).mean().iloc[-1]
-                    if ema8 < ema21:  # انعكاس الاتجاه
-                        self.close_trade(symbol, current_price, 'trend_reversal')
-                        continue
+                    
+                    if ema8 < ema21:  # انعكاس مؤقت
+                        # تأكد من استمرارية الانعكاس على 3 شمعات
+                        data_5m = self.get_historical_data(symbol, '5m', 5)
+                        if data_5m is not None and len(data_5m) >= 3:
+                            ema8_last_3 = data_5m['close'].ewm(span=8, adjust=False).mean().iloc[-3:]
+                            ema21_last_3 = data_5m['close'].ewm(span=21, adjust=False).mean().iloc[-3:]
+        
+                        # ✅ الخروج فقط إذا استمر الانعكاس 3 شمعات متتالية
+                        if all(ema8_last_3 < ema21_last_3):
+                            self.close_trade(symbol, current_price, 'trend_reversal')
+                            continue
                     
                 # إغلاق الصفقة إذا انخفض الربح عن الحد الأدنى للجزء المتبقي
                 if (trade.get('first_profit_taken', False) and 
