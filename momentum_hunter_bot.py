@@ -723,7 +723,7 @@ class MomentumHunterBot:
             current_price = opportunity['details']['current_price']
             atr = opportunity['details']['atr']
             atr_percent = opportunity['details']['atr_percent']
-            
+        
             if score >= 80:
                 risk_pct = 0.007
                 risk_level = "استثنائية 🚀"
@@ -738,32 +738,38 @@ class MomentumHunterBot:
                 risk_level = "جيدة 🔄"
             else:
                 return 0, {'risk_level': 'ضعيفة - لا تتداول'}
-            
+        
             volatility_factor = min(1.0, 5.0 / atr_percent) if atr_percent > 0 else 1.0
             stop_distance = atr * 2.5
             risk_amount = usdt_balance * risk_pct * volatility_factor
             position_size_usdt = min(risk_amount / (stop_distance / current_price), self.max_trade_size)
             position_size_usdt = max(self.min_trade_size, position_size_usdt)
-            
+        
             min_profit_needed = position_size_usdt * self.min_profit_threshold
             potential_profit = (opportunity['details'].get('price_change_5candles', 0) / 100) * position_size_usdt
-            
+        
             if potential_profit < min_profit_needed:
                 logger.info(f"تخطي {opportunity['symbol']} - الربح المتوقع {potential_profit:.2f} أقل من الحد الأدنى {min_profit_needed:.2f}")
                 return 0, {'risk_level': 'ربح غير كافي'}
-        
+    
             size_info = {
                 'size_usdt': position_size_usdt,
                 'risk_percentage': (position_size_usdt / usdt_balance) * 100 if usdt_balance > 0 else 0,
                 'risk_level': risk_level,
                 'min_trade_size': self.min_trade_size
             }
+    
+            # إضافة فحص على risk_percentage (من الرد السابق)
+            if size_info['risk_percentage'] > 20.0:  # حد أقصى لتجنب مخاطرة عالية مثل 51%
+                logger.warning(f"تخطي {opportunity['symbol']} - نسبة المخاطرة عالية جدًا ({size_info['risk_percentage']:.2f}%)")
+                return 0, {'risk_level': 'مخاطرة عالية'}
         
             logger.info(f"📊 حجم الصفقة لـ {opportunity['symbol']}: "
                        f"${position_size_usdt:.2f} - "
                        f"التقييم: {risk_level}")
-        
+    
             return position_size_usdt, size_info
+    
         except Exception as e:
             logger.error(f"خطأ في حساب حجم الصفقة: {e}")
             return 0, {'risk_level': 'خطأ في الحساب'}
@@ -849,24 +855,24 @@ class MomentumHunterBot:
     def execute_trade(self, symbol, opportunity):
         current_price = opportunity['details']['current_price']
         atr = opportunity['details']['atr']
-        
+    
         try:
             if symbol in self.active_trades:
                 logger.info(f"⏭️ تخطي {symbol} - صفقة نشطة موجودة")
                 return False
-            
+        
             if not self.check_correlation(symbol, list(self.active_trades.keys())):
                 return False
-        
+    
             balances = self.get_account_balance()
             usdt_balance = balances.get('USDT', {}).get('free', 0)
         
             if usdt_balance < self.min_trade_size:
-                logger.warning(f"💰 رصيد USDT غير كافي: {usdt_balance:.2f}")
+                logger.warning(f"💰 رصيد USDT غير كافي: {usdt_balance:.2f} < {self.min_trade_size}")
                 return False
         
             position_size_usdt, size_info = self.calculate_position_size(opportunity, usdt_balance)
-            
+        
             if position_size_usdt < self.min_trade_size:
                 logger.info(f"📉 تخطي {symbol} - حجم الصفقة صغير: {position_size_usdt:.2f}")
                 return False
@@ -881,7 +887,7 @@ class MomentumHunterBot:
             symbol_info = self.safe_binance_request(self.client.get_symbol_info, symbol=symbol)
             if not symbol_info:
                 return False
-                
+            
             lot_size = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
             if lot_size:
                 min_qty = float(lot_size['minQty'])
@@ -891,10 +897,10 @@ class MomentumHunterBot:
         
             atr_multiplier = 2.5
             risk_reward_ratio = 3.0
-            
+        
             stop_loss_price = current_price - (atr * atr_multiplier)
             take_profit_price = current_price + (risk_reward_ratio * (current_price - stop_loss_price))
-            
+        
             min_sl_distance = current_price * 0.005
             if (current_price - stop_loss_price) < min_sl_distance:
                 stop_loss_price = current_price - min_sl_distance
@@ -903,17 +909,17 @@ class MomentumHunterBot:
             if self.dry_run:
                 logger.info(f"🧪 محاكاة صفقة لـ {symbol}: حجم {position_size_usdt:.2f}")
                 return True
-            
+        
             order = self.safe_binance_request(self.client.order_market_buy,
                                          symbol=symbol,
                                          quantity=quantity)
-        
+         
             if not order or order['status'] != 'FILLED':
                 logger.error(f"❌ فشل تنفيذ أمر الشراء لـ {symbol}")
                 return False
-                
-            avg_fill_price = float(order['fills'][0]['price']) if order['fills'] else current_price
             
+            avg_fill_price = float(order['fills'][0]['price']) if order['fills'] else current_price
+        
             trade_data = {
                 'symbol': symbol,
                 'type': 'buy',
@@ -934,14 +940,20 @@ class MomentumHunterBot:
             }
         
             self.active_trades[symbol] = trade_data
-            if self.mongo_manager.save_trade(trade_data):
-                logger.info(f"✅ تم حفظ الصفقة الجديدة لـ {symbol} في MongoDB - ID: {trade_data.get('_id', 'N/A')}")
+            # محاولة حفظ مرتين إذا فشل
+            saved = self.mongo_manager.save_trade(trade_data)
+            if not saved:
+                logger.warning(f"محاولة إعادة حفظ الصفقة لـ {symbol}")
+                saved = self.mongo_manager.save_trade(trade_data)
+        
+            if saved:
+                logger.info(f"✅ تم حفظ الصفقة الجديدة لـ {symbol} في MongoDB")
             else:
-                logger.error(f"❌ فشل حفظ الصفقة الجديدة لـ {symbol} في MongoDB")
+                logger.error(f"❌ فشل حفظ الصفقة الجديدة لـ {symbol} في MongoDB بعد محاولتين")
         
             if self.notifier:
                 message = (
-                    f"🚀 <b>صفقة جديدة</b>\n\n"
+                    f"🚀 <b>صفقة جديدة - إستراتيجية محسنة</b>\n\n"
                     f"• العملة: {symbol}\n"
                     f"• السعر: ${avg_fill_price:.4f}\n"
                     f"• الكمية: {quantity:.6f}\n"
@@ -951,13 +963,24 @@ class MomentumHunterBot:
                     f"• نسبة المخاطرة: {size_info.get('risk_percentage', 0):.1f}%\n"
                     f"• وقف الخسارة: ${stop_loss_price:.4f}\n"
                     f"• أخذ الربح: ${take_profit_price:.4f}\n"
+                    f"• نسبة العائد: {risk_reward_ratio}:1\n"
+                    f"• ATR: {opportunity['details']['atr_percent']}%\n"
+                    f"• هامش الأمان: {atr_multiplier} ATR\n\n"
                     f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                self.notifier.send_message(message, 'trade_execution')
+                sent = self.notifier.send_message(message, 'trade_execution')
+                if sent:
+                    logger.info(f"✅ تم إرسال إشعار Telegram لشراء {symbol}")
+                else:
+                    logger.error(f"❌ فشل إرسال إشعار Telegram لشراء {symbol}")
+            else:
+                logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لـ {symbol}")
         
             logger.info(f"✅ تم شراء {symbol} - الحجم: ${position_size_usdt:.2f}")
+         
+            time.sleep(2)
             return True
-        
+    
         except Exception as e:
             logger.error(f"❌ خطأ في تنفيذ صفقة {symbol}: {e}")
             return False
@@ -965,17 +988,17 @@ class MomentumHunterBot:
     def close_trade(self, symbol, exit_price, reason):
         try:
             trade = self.active_trades[symbol]
-            
+        
             gross_pnl = (exit_price - trade['entry_price']) * trade['quantity']
             estimated_fees = trade['trade_size'] * 0.002
             net_pnl = gross_pnl - estimated_fees
             pnl_percent = (net_pnl / trade['trade_size']) * 100
-            
+        
             min_expected_pnl = trade['trade_size'] * trade.get('min_profit_threshold', 0.002)
             if abs(net_pnl) < min_expected_pnl and reason != 'stop_loss':
                 logger.info(f"🔄 إلغاء إغلاق {symbol} - الربح/الخسارة أقل من الحد الأدنى")
                 return False
-            
+        
             trade['exit_price'] = exit_price
             trade['exit_time'] = datetime.now()
             trade['profit_loss'] = net_pnl
@@ -983,12 +1006,18 @@ class MomentumHunterBot:
             trade['status'] = 'completed'
             trade['exit_reason'] = reason
             trade['fees_estimated'] = estimated_fees
-            
-            if self.mongo_manager.save_trade(trade):
-                logger.info(f"✅ تم حفظ إغلاق الصفقة لـ {symbol} في MongoDB - ID: {trade.get('_id', 'N/A')}")
+        
+            # محاولة حفظ مرتين إذا فشل
+            saved = self.mongo_manager.save_trade(trade)
+            if not saved:
+                logger.warning(f"محاولة إعادة حفظ إغلاق الصفقة لـ {symbol}")
+                saved = self.mongo_manager.save_trade(trade)
+        
+            if saved:
+                logger.info(f"✅ تم حفظ إغلاق الصفقة لـ {symbol} في MongoDB")
             else:
-                logger.error(f"❌ فشل حفظ إغلاق الصفقة لـ {symbol} في MongoDB")
-            
+                logger.error(f"❌ فشل حفظ إغلاق الصفقة لـ {symbol} في MongoDB بعد محاولتين")
+        
             if self.notifier:
                 emoji = "✅" if net_pnl > 0 else "❌"
                 message = (
@@ -1000,13 +1029,21 @@ class MomentumHunterBot:
                     f"• الربح/الخسارة: ${net_pnl:.2f} ({pnl_percent:+.2f}%)\n"
                     f"• الرسوم التقديرية: ${estimated_fees:.2f}\n"
                     f"• المدة: {(trade['exit_time'] - trade['timestamp']).total_seconds() / 60:.1f} دقيقة\n"
+                    f"• المخاطرة: ${trade['position_size_usdt']:.2f}\n\n"
                     f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                self.notifier.send_message(message, 'trade_close')
-            
+                sent = self.notifier.send_message(message, 'trade_close')
+                if sent:
+                    logger.info(f"✅ تم إرسال إشعار Telegram لإغلاق {symbol}")
+                else:
+                    logger.error(f"❌ فشل إرسال إشعار Telegram لإغلاق {symbol}")
+            else:
+                logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لإغلاق {symbol}")
+        
             logger.info(f"🔚 تم إغلاق {symbol} بـ {reason}: ${net_pnl:.2f} ({pnl_percent:+.2f}%)")
             del self.active_trades[symbol]
             return True
+    
         except Exception as e:
             logger.error(f"❌ خطأ في إغلاق صفقة {symbol}: {e}")
             return False
