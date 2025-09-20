@@ -434,7 +434,7 @@ class MomentumHunterBot:
         'momentum_score_threshold': 45,   # الحد الأدنى للنقاط للدخول (تم تخفيضه)
         'min_profit_threshold': 0.002,    # الحد الأدنى للربح المتوقع
         
-        'first_profit_target': 1.15,        # 1% ربح + 0.15% عمولة
+        'first_profit_target': 0.65,        # 1% ربح + 0.15% عمولة
         'first_profit_percentage': 0.5,     # أخذ 50% من الصفقة
         'min_required_profit': 0.01,        # 1% ربح mínimo مطلوب على كامل الصفقة
         'breakeven_sl_percent': 0.5,        # تحريك وقف الخسارة عند تحقيق 0.5% ربح
