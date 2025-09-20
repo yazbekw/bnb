@@ -203,8 +203,8 @@ class RequestManager:
             current_time = time.time()
             elapsed = current_time - self.last_request_time
 
-            if elapsed < 0.1:  # زيادة التأخير إلى 100 مللي ثانية
-                time.sleep(0.1 - elapsed)
+            if elapsed < 0.2:  # زيادة التأخير إلى 200 مللي ثانية
+                time.sleep(0.2 - elapsed)
 
             if current_time - self.last_request_time >= 60:
                 self.request_count = 0
