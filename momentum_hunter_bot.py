@@ -1192,8 +1192,39 @@ class MomentumHunterBot:
         
             net_pnl = ((current_price - trade['entry_price']) * trade['quantity']) - trade['trade_size'] * 0.001
             pnl_percent = (net_pnl / trade['trade_size']) * 100 if trade['trade_size'] > 0 else 0
-            logger.info(f"تتبع {symbol}: سعر حالي = {current_price:.4f}, ربح/خسارة = {net_pnl:.2f} ({pnl_percent:.2f}%), وقف خسارة = {trade['stop_loss']:.4f}, أخذ ربح = {trade['take_profit']:.4f}, حالة = {trade['status']}, مدة = {(datetime.now(damascus_tz) - trade['timestamp']).total_seconds() / 60:.1f} دقيقة")
-
+            trade_duration_minutes = (datetime.now(damascus_tz) - trade['timestamp']).total_seconds() / 60
+        
+            # تسجيل المعلومات في السجل
+            logger.info(
+                f"تتبع {symbol}: سعر حالي = {current_price:.4f}, "
+                f"ربح/خسارة = {net_pnl:.2f} ({pnl_percent:.2f}%), "
+                f"وقف خسارة = {trade['stop_loss']:.4f}, "
+                f"أخذ ربح = {trade['take_profit']:.4f}, "
+                f"حالة = {trade['status']}, "
+                f"مدة = {trade_duration_minutes:.1f} دقيقة"
+            )
+        
+            # إرسال إشعار إلى Telegram
+            if self.notifier:
+                message = (
+                    f"📈 <b>تتبع الصفقة: {symbol}</b>\n\n"
+                    f"• السعر الحالي: ${current_price:.4f}\n"
+                    f"• الربح/الخسارة: ${net_pnl:.2f} ({pnl_percent:+.2f}%)\n"
+                    f"• وقف الخسارة: ${trade['stop_loss']:.4f}\n"
+                    f"• أخذ الربح: ${trade['take_profit']:.4f}\n"
+                    f"• الحالة: {trade['status']}\n"
+                    f"• المدة: {trade_duration_minutes:.1f} دقيقة\n"
+                    f"⏰ {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                # إرسال الإشعار مع تحديد نوع الرسالة لتجنب التكرار السريع
+                sent = self.notifier.send_message(message, f'track_{symbol}')
+                if sent:
+                    logger.info(f"✅ تم إرسال إشعار تتبع Telegram لـ {symbol}")
+                else:
+                    logger.error(f"❌ فشل إرسال إشعار تتبع Telegram لـ {symbol}")
+            else:
+                logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لتتبع {symbol}")
+    
     def translate_exit_reason(self, reason):
         reasons = {
             'stop_loss': 'وقف الخسارة',
