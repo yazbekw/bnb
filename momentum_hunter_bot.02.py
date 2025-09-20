@@ -1470,7 +1470,7 @@ class MomentumHunterBot:
         
             net_pnl = ((current_price - trade['entry_price']) * trade['quantity']) - trade['trade_size'] * 0.001
             pnl_percent = (net_pnl / trade['trade_size']) * 100 if trade['trade_size'] > 0 else 0
-            trade_duration_minutes = (datetime.now(damascus_tz) - trade['timestamp']).total_seconds() / 60
+            trade_duration_minutes = (datetime.now(damascus_tz).replace(tzinfo=None) - trade['timestamp'].replace(tzinfo=None)).total_seconds() / 60
         
             # تسجيل المعلومات في السجل
             logger.info(
