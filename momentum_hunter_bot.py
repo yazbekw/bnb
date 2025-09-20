@@ -413,45 +413,56 @@ class MomentumHunterBot:
         self.api_secret = os.environ.get('BINANCE_API_SECRET')
         self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
-        
+    
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
-            
+        
         self.client = Client(self.api_key, self.api_secret)
         self.request_manager = RequestManager()
         self.circuit_breaker = CircuitBreaker()
         self.mongo_manager = MongoManager()
         self.cache = TTLCache(maxsize=1000, ttl=300)
-        
+    
         if self.telegram_token and self.telegram_chat_id:
             self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id)
+            logger.info("✅ Telegram notifier initialized successfully")
         else:
             self.notifier = None
-            
+            logger.warning("⚠️ Telegram notifier not initialized - check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+        
         self.health_monitor = HealthMonitor(self)
-        
-        
+    
+    
         self.min_daily_volume = 1000000
         self.min_trade_size = 10
         self.max_trade_size = 50
         self.risk_per_trade = 2.0
         self.max_position_size = 0.35
-        self.momentum_score_threshold = 50  # خفضتها لدخول أسرع
+        self.momentum_score_threshold = 50
 
         self.symbols = self.get_all_trading_symbols()
         self.stable_coins = ['USDT', 'BUSD', 'USDC']
-        
+    
         self.active_trades = {}
         self.last_scan_time = datetime.now()
-        self.min_profit_threshold = 0.002
-        
-        # جديد: تهيئة نموذج XGBoost
+        self.min_profit_threshold = 0.003
+    
         self.ml_model = None
-        self.train_ml_model()  # تدريب النموذج عند التهيئة
+        self.train_ml_model()
 
         logger.info("✅ تم تهيئة بوت صائد الصاعدات المتقدم بنجاح")
 
-
+    def test_notifier(self):
+        if self.notifier:
+            message = "🔔 <b>اختبار إشعار Telegram</b>\nالنظام يعمل بشكل طبيعي"
+            sent = self.notifier.send_message(message, 'test')
+            if sent:
+                logger.info("✅ تم إرسال اختبار Telegram بنجاح")
+            else:
+                logger.error("❌ فشل إرسال اختبار Telegram")
+        else:
+            logger.warning("⚠️ Notifier غير مفعل - لا يمكن إجراء الاختبار")
+            
     def get_all_trading_symbols(self):
         try:
             # القائمة الأولية الموسعة
@@ -993,71 +1004,71 @@ class MomentumHunterBot:
     def execute_trade(self, symbol, opportunity):
         current_price = opportunity['details']['current_price']
         atr = opportunity['details']['atr']
-        
+    
         try:
             if symbol in self.active_trades:
                 logger.info(f"⏭️ تخطي {symbol} - صفقة نشطة موجودة")
                 return False
-            
+        
             if not self.check_correlation(symbol, list(self.active_trades.keys())):
                 return False
-        
+    
             balances = self.get_account_balance()
             usdt_balance = balances.get('USDT', {}).get('free', 0)
-        
+    
             if usdt_balance < self.min_trade_size:
-                logger.warning(f"💰 رصيد USDT غير كافي: {usdt_balance:.2f} < {self.min_trade_size}")
+                logger.warning(f"💰 رصيد USDT غير كافي: {usdt_balance:.2f}")
                 return False
-        
+    
             position_size_usdt, size_info = self.calculate_position_size(opportunity, usdt_balance)
-            
+        
             if position_size_usdt < self.min_trade_size:
                 logger.info(f"📉 تخطي {symbol} - حجم الصفقة صغير: {position_size_usdt:.2f}")
                 return False
-        
+    
             quantity = position_size_usdt / current_price
-        
+    
             precision_info = self.get_symbol_precision(symbol)
             step_size = precision_info['step_size']
             quantity = (quantity // step_size) * step_size
             quantity = round(quantity, precision_info['quantity_precision'])
-        
+    
             symbol_info = self.safe_binance_request(self.client.get_symbol_info, symbol=symbol)
             if not symbol_info:
                 return False
-                
+            
             lot_size = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
             if lot_size:
                 min_qty = float(lot_size['minQty'])
                 if quantity < min_qty:
                     logger.warning(f"⚖️ الكمية {quantity} أقل من الحد الأدنى {min_qty} لـ {symbol}")
                     return False
+    
+            atr_multiplier = 1.5
+            risk_reward_ratio = 2.0
         
-            atr_multiplier = 1.5  # خفضت لوقف خسارة أسرع
-            risk_reward_ratio = 2.0  # خفضت لأخذ ربح أسرع
-            
             stop_loss_price = current_price - (atr * atr_multiplier)
             take_profit_price = current_price + (risk_reward_ratio * (current_price - stop_loss_price))
-            
+        
             min_sl_distance = current_price * 0.005
             if (current_price - stop_loss_price) < min_sl_distance:
                 stop_loss_price = current_price - min_sl_distance
                 take_profit_price = current_price + (risk_reward_ratio * (current_price - stop_loss_price))
-        
+    
             if self.dry_run:
                 logger.info(f"🧪 محاكاة صفقة لـ {symbol}: حجم {position_size_usdt:.2f}")
                 return True
-            
+    
             order = self.safe_binance_request(self.client.order_market_buy,
-                                         symbol=symbol,
-                                         quantity=quantity)
-        
+                                             symbol=symbol,
+                                             quantity=quantity)
+    
             if not order or order['status'] != 'FILLED':
-                logger.error(f"❌ فشل تنفيذ أمر الشراء لـ {symbol}")
+                logger.error(f"❌ فشل تنفيذ أمر الشراء لـ {symbol}: {order}")
                 return False
-                
-            avg_fill_price = float(order['fills'][0]['price']) if order['fills'] else current_price
             
+            avg_fill_price = float(order['fills'][0]['price']) if order['fills'] else current_price
+        
             trade_data = {
                 'symbol': symbol,
                 'type': 'buy',
@@ -1076,33 +1087,58 @@ class MomentumHunterBot:
                 'order_id': order['orderId'],
                 'min_profit_threshold': self.min_profit_threshold
             }
-        
+    
             self.active_trades[symbol] = trade_data
             self.mongo_manager.save_trade(trade_data)
-        
+     
             logger.info(f"✅ تم شراء {symbol} - الحجم: ${position_size_usdt:.2f}")
-            
+        
+            if self.notifier:
+                message = (
+                    f"🚀 <b>صفقة جديدة - إستراتيجية محسنة</b>\n\n"
+                    f"• العملة: {symbol}\n"
+                    f"• السعر: ${avg_fill_price:.4f}\n"
+                    f"• الكمية: {quantity:.6f}\n"
+                    f"• الحجم: ${quantity * avg_fill_price:.2f}\n"
+                    f"• النتيجة: {opportunity['score']}/100\n"
+                    f"• مستوى المخاطرة: {size_info.get('risk_level', '')}\n"
+                    f"• نسبة المخاطرة: {size_info.get('risk_percentage', 0):.1f}%\n"
+                    f"• وقف الخسارة: ${stop_loss_price:.4f}\n"
+                    f"• أخذ الربح: ${take_profit_price:.4f}\n"
+                    f"• نسبة العائد: {risk_reward_ratio}:1\n"
+                    f"• ATR: {opportunity['details']['atr_percent']}%\n"
+                    f"• هامش الأمان: {atr_multiplier} ATR\n\n"
+                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                sent = self.notifier.send_message(message, 'trade_execution')
+                if sent:
+                    logger.info(f"✅ تم إرسال إشعار Telegram لشراء {symbol}")
+                else:
+                    logger.error(f"❌ فشل إرسال إشعار Telegram لشراء {symbol}")
+            else:
+                logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لـ {symbol}")
+    
             time.sleep(2)
             return True
-        
+    
         except Exception as e:
             logger.error(f"❌ خطأ في تنفيذ صفقة {symbol}: {e}")
             return False
-
+    
     def close_trade(self, symbol, exit_price, reason):
         try:
             trade = self.active_trades[symbol]
-            
+        
             gross_pnl = (exit_price - trade['entry_price']) * trade['quantity']
             estimated_fees = trade['trade_size'] * 0.002
             net_pnl = gross_pnl - estimated_fees
             pnl_percent = (net_pnl / trade['trade_size']) * 100
-            
+        
             min_expected_pnl = trade['trade_size'] * trade.get('min_profit_threshold', 0.002)
             if abs(net_pnl) < min_expected_pnl and reason != 'stop_loss':
                 logger.info(f"🔄 إلغاء إغلاق {symbol} - الربح/الخسارة أقل من الحد الأدنى")
                 return False
-            
+        
             trade['exit_price'] = exit_price
             trade['exit_time'] = datetime.now()
             trade['profit_loss'] = net_pnl
@@ -1110,16 +1146,53 @@ class MomentumHunterBot:
             trade['status'] = 'completed'
             trade['exit_reason'] = reason
             trade['fees_estimated'] = estimated_fees
-            
+        
             self.mongo_manager.save_trade(trade)
-            
+        
+            if self.notifier:
+                emoji = "✅" if net_pnl > 0 else "❌"
+                message = (
+                    f"{emoji} <b>إغلاق الصفقة</b>\n\n"
+                    f"• العملة: {symbol}\n"
+                    f"• السبب: {self.translate_exit_reason(reason)}\n"
+                    f"• سعر الدخول: ${trade['entry_price']:.4f}\n"
+                    f"• سعر الخروج: ${exit_price:.4f}\n"
+                    f"• الربح/الخسارة: ${net_pnl:.2f} ({pnl_percent:+.2f}%)\n"
+                    f"• الرسوم التقديرية: ${estimated_fees:.2f}\n"
+                    f"• المدة: {(trade['exit_time'] - trade['timestamp']).total_seconds() / 60:.1f} دقيقة\n"
+                    f"• المخاطرة: ${trade['position_size_usdt']:.2f}\n\n"
+                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                sent = self.notifier.send_message(message, 'trade_close')
+                if sent:
+                    logger.info(f"✅ تم إرسال إشعار Telegram لإغلاق {symbol}")
+                else:
+                    logger.error(f"❌ فشل إرسال إشعار Telegram لإغلاق {symbol}")
+            else:
+                logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لإغلاق {symbol}")
+        
             logger.info(f"🔚 تم إغلاق {symbol} بـ {reason}: ${net_pnl:.2f} ({pnl_percent:+.2f}%)")
-            del self.active_trades[symbol]
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في إغلاق صفقة {symbol}: {e}")
-            return False
+                del self.active_trades[symbol]
+                return True
+        
+            except Exception as e:
+                logger.error(f"❌ خطأ في إغلاق صفقة {symbol}: {e}")
+                return False
+
+    def track_open_trades(self):
+        if not self.active_trades:
+            logger.info("لا صفقات مفتوحة حاليًا")
+            return
+    
+        for symbol, trade in self.active_trades.items():
+            current_price = self.get_current_price(symbol)
+            if current_price is None:
+                logger.warning(f"تعذر جلب سعر {symbol}")
+                continue
+        
+            net_pnl = ((current_price - trade['entry_price']) * trade['quantity']) - trade['trade_size'] * 0.001
+            pnl_percent = (net_pnl / trade['trade_size']) * 100 if trade['trade_size'] > 0 else 0
+            logger.info(f"تتبع {symbol}: سعر حالي = {current_price:.4f}, ربح/خسارة = {net_pnl:.2f} ({pnl_percent:.2f}%), وقف خسارة = {trade['stop_loss']:.4f}, أخذ ربح = {trade['take_profit']:.4f}, حالة = {trade['status']}, مدة = {(datetime.now() - trade['timestamp']).total_seconds() / 60:.1f} دقيقة")
 
     def translate_exit_reason(self, reason):
         reasons = {
@@ -1238,6 +1311,7 @@ class MomentumHunterBot:
                 return
     
             self.train_ml_model()  # إعادة تدريب نموذج XGBoost
+            self.test_notifier()
     
             self.manage_active_trades()
     
@@ -1289,18 +1363,20 @@ class MomentumHunterBot:
     
     def run_bot(self):
         logger.info("🚀 بدء تشغيل البوت بشكل مستمر")
-        
+    
         if self.notifier:
             self.notifier.send_message("🚀 <b>بدء تشغيل البوت</b>\nتم تشغيل إستراتيجية الصعود المحسنة", 'startup')
-        
+    
         schedule.every(15).minutes.do(self.run_trading_cycle)
-        
+    
+        schedule.every(1).minute.do(self.track_open_trades)  # تتبع كل دقيقة
+    
         schedule.every(5).minutes.do(self.health_monitor.check_connections)
-        
+    
         schedule.every(6).hours.do(self.send_daily_report)
-        
+    
         self.run_trading_cycle()
-        
+    
         while True:
             try:
                 schedule.run_pending()
