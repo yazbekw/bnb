@@ -441,7 +441,7 @@ class MomentumHunterBot:
         
         self.active_trades = {}
         self.last_scan_time = datetime.now()
-        self.min_profit_threshold = 0.003
+        self.min_profit_threshold = 0.002
         
         # جديد: تهيئة نموذج XGBoost
         self.ml_model = None
@@ -857,8 +857,7 @@ class MomentumHunterBot:
             current_price = opportunity['details']['current_price']
             atr = opportunity['details']['atr']
             atr_percent = opportunity['details']['atr_percent']
-            
-            # جعلت risk_pct ديناميكية بناءً على الدرجة (أعلى للفرص القوية)
+        
             if score >= 80:
                 risk_pct = 0.007
                 risk_level = "استثنائية 🚀"
@@ -868,38 +867,41 @@ class MomentumHunterBot:
             elif score >= 65:
                 risk_pct = 0.005
                 risk_level = "قوية 👍"
-            elif score >= 50:  # توسيع النطاق لدخول أسرع
+            elif score >= 50:
                 risk_pct = 0.004
                 risk_level = "جيدة 🔄"
             else:
                 return 0, {'risk_level': 'ضعيفة - لا تتداول'}
-            
+        
             volatility_factor = min(1.0, 5.0 / atr_percent) if atr_percent > 0 else 1.0
-            stop_distance = atr * 1.5  # خفضت المضاعف لوقف خسارة أسرع
+            stop_distance = atr * 1.5
             risk_amount = usdt_balance * risk_pct * volatility_factor
             position_size_usdt = min(risk_amount / (stop_distance / current_price), self.max_trade_size)
             position_size_usdt = max(self.min_trade_size, position_size_usdt)
-            
+        
             min_profit_needed = position_size_usdt * self.min_profit_threshold
             potential_profit = (opportunity['details'].get('price_change_5candles', 0) / 100) * position_size_usdt
-            
-            if potential_profit < min_profit_needed:
-                logger.info(f"تخطي {opportunity['symbol']} - الربح المتوقع {potential_profit:.2f} أقل من الحد الأدنى {min_profit_needed:.2f}")
-                return 0, {'risk_level': 'ربح غير كافي'}
         
+            # جعل التحقق أكثر مرونة إذا كان الاتجاه صاعدًا
+            if potential_profit < min_profit_needed and potential_profit < 0:
+                if opportunity['details'].get('trend', '') == 'صاعد' or opportunity['details'].get('breakout', '') == 'إيجابي':
+                    logger.info(f"السماح بدخول {opportunity['symbol']} رغم ربح سلبي مؤقت: {potential_profit:.2f}")
+                else:
+                    logger.info(f"تخطي {opportunity['symbol']} - الربح المتوقع {potential_profit:.2f} أقل من الحد الأدنى {min_profit_needed:.2f}")
+                    return 0, {'risk_level': 'ربح غير كافي'}
+    
             size_info = {
                 'size_usdt': position_size_usdt,
                 'risk_percentage': (position_size_usdt / usdt_balance) * 100 if usdt_balance > 0 else 0,
                 'risk_level': risk_level,
                 'min_trade_size': self.min_trade_size
             }
-        
+     
             logger.info(f"📊 حجم الصفقة لـ {opportunity['symbol']}: "
                        f"${position_size_usdt:.2f} - "
                        f"التقييم: {risk_level}")
-        
+    
             return position_size_usdt, size_info
-        
         except Exception as e:
             logger.error(f"خطأ في حساب حجم الصفقة: {e}")
             return 0, {'risk_level': 'خطأ في الحساب'}
