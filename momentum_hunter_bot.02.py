@@ -236,6 +236,28 @@ class MongoManager:
         self.db = None
         self.connect(retries=5, delay=5)
         
+    def update_trade_status(self, symbol, order_id, updates):
+        try:
+            if self.db is None:
+                if not self.connect():
+                    return False
+                
+            result = self.db['trades'].update_one(
+                {'symbol': symbol, 'order_id': order_id},
+                {'$set': updates}
+            )
+         
+            if result.modified_count > 0:
+                logger.info(f"✅ تم تحديث صفقة {symbol} في MongoDB")
+                return True
+            else:
+                logger.warning(f"⚠️ لم يتم العثور على صفقة {symbol} في MongoDB للتحديث")
+                return False
+            
+        except Exception as e:
+            logger.error(f"خطأ في تحديث صفقة {symbol}: {e}")
+            return False
+        
     def connect(self, retries=3, delay=5):
         for attempt in range(retries):
             try:
@@ -1389,29 +1411,30 @@ class MomentumHunterBot:
     def close_trade(self, symbol, exit_price, reason):
         try:
             trade = self.active_trades[symbol]
-    
+
             # حساب العمولة (0.1% للدخول + 0.1% للخروج)
             total_fees = trade['trade_size'] * 0.002
             gross_pnl = (exit_price - trade['entry_price']) * trade['quantity']
             net_pnl = gross_pnl - total_fees
-        
+    
             # إضافة الأرباح الجزئية إذا وجدت
             total_partial_profits = 0
             if 'partial_profits' in trade:
                 for partial in trade['partial_profits']:
                     total_partial_profits += partial['profit_amount']
-        
+    
             # الربح الإجمالي (الجزء المتبقي + الأرباح الجزئية)
             total_net_pnl = net_pnl + total_partial_profits
             total_profit_percent = (total_net_pnl / trade['trade_size']) * 100
-        
+    
             # الشرط الجديد: يجب تحقيق 1% ربح صافي على الأقل على كامل الصفقة
             min_required_profit = trade['trade_size'] * 0.01  # 1%
             if (total_net_pnl < min_required_profit and 
                 reason not in ['stop_loss', 'shutdown', 'timeout']):
                 logger.info(f"🔄 إلغاء إغلاق {symbol} - الربح الإجمالي {total_net_pnl:.2f} أقل من 1% المطلوبة")
                 return False
-    
+
+            # تحديث بيانات الصفقة
             trade['exit_price'] = exit_price
             trade['exit_time'] = datetime.now(damascus_tz)
             trade['profit_loss'] = total_net_pnl
@@ -1421,12 +1444,25 @@ class MomentumHunterBot:
             trade['fees_estimated'] = total_fees
             trade['min_required_profit'] = min_required_profit
             trade['partial_profits_total'] = total_partial_profits
-    
-            self.mongo_manager.save_trade(trade)
-    
+
+            updates = {
+                'status': 'completed',
+                'exit_price': exit_price,
+                'exit_time': datetime.now(damascus_tz),
+                'profit_loss': total_net_pnl,
+                'pnl_percent': total_profit_percent,
+                'exit_reason': reason,
+                'fees_estimated': total_fees,
+                'min_required_profit': min_required_profit,
+                'partial_profits_total': total_partial_profits
+            }
+            self.mongo_manager.update_trade_status(symbol, trade['order_id'], updates)
+
+
+            # إرسال إشعار Telegram
             if self.notifier:
                 emoji = "✅" if total_net_pnl > 0 else "❌"
-            
+        
                 message = (
                     f"{emoji} <b>إغلاق الصفقة</b>\n\n"
                     f"• العملة: {symbol}\n"
@@ -1447,11 +1483,11 @@ class MomentumHunterBot:
                     logger.error(f"❌ فشل إرسال إشعار Telegram لإغلاق {symbol}")
             else:
                 logger.warning(f"⚠️ Notifier غير مفعل - لا إشعار Telegram لإغلاق {symbol}")
-    
+
             logger.info(f"🔚 تم إغلاق {symbol} بـ {reason}: ${total_net_pnl:.2f} ({total_profit_percent:+.2f}%)")
             del self.active_trades[symbol]
             return True
-    
+
         except Exception as e:
             logger.error(f"❌ خطأ في إغلاق صفقة {symbol}: {e}")
             return False
