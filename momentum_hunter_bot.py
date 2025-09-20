@@ -430,36 +430,39 @@ class MomentumHunterBot:
         self.api_secret = os.environ.get('BINANCE_API_SECRET')
         self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
-        
+    
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
-            
+        
         self.client = Client(self.api_key, self.api_secret)
         self.request_manager = RequestManager()
         self.circuit_breaker = CircuitBreaker()
         self.mongo_manager = MongoManager()
         self.cache = TTLCache(maxsize=1000, ttl=300)
-        
+    
         if self.telegram_token and self.telegram_chat_id:
             self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id)
         else:
             self.notifier = None
-            
-        self.health_monitor = HealthMonitor(self)
         
-        self.symbols = self.get_all_trading_symbols()
-        self.stable_coins = ['USDT', 'BUSD', 'USDC']
-        self.min_daily_volume = 1000000  # إصلاح الخطأ
+        self.health_monitor = HealthMonitor(self)
+    
+        # تعيين min_daily_volume قبل استدعاء get_all_trading_symbols
+        self.min_daily_volume = 1000000
         self.min_trade_size = 10
         self.max_trade_size = 50
         self.risk_per_trade = 2.0
         self.max_position_size = 0.35
         self.momentum_score_threshold = 60
-        
+    
+        # استدعاء get_all_trading_symbols بعد تعيين min_daily_volume
+        self.symbols = self.get_all_trading_symbols()
+        self.stable_coins = ['USDT', 'BUSD', 'USDC']
+    
         self.active_trades = {}
         self.last_scan_time = datetime.now()
         self.min_profit_threshold = 0.003
-        
+    
         self.ml_model = None
         self.train_ml_model()
         logger.info("✅ تم تهيئة بوت صائد الصاعدات المتقدم بنجاح")
