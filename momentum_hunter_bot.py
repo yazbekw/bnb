@@ -1141,10 +1141,10 @@ class MomentumHunterBot:
             data = self.calculate_technical_indicators(data)
             latest = data.iloc[-1]
             prev = data.iloc[-2]
-            
+        
             score = 0
             details = {}
-            
+        
             logger.debug(f"تحليل {symbol}: EMA21={latest['ema21']:.2f}, EMA50={latest['ema50']:.2f}, EMA100={latest['ema100']:.2f}")
             if latest['ema21'] > latest['ema50'] and latest['ema50'] > latest['ema100']:
                 score += self.WEIGHTS['trend']
@@ -1156,7 +1156,7 @@ class MomentumHunterBot:
                 details['trend'] = 'هابط'
                 logger.debug(f"تخطي {symbol} بسبب اتجاه هابط")
                 return 0, details
-            
+        
             window = data.iloc[max(0, len(data)-4):]
             for i in range(1, len(window)):
                 if window['ema8'].iat[i-1] <= window['ema21'].iat[i-1] and window['ema8'].iat[i] > window['ema21'].iat[i]:
@@ -1164,35 +1164,35 @@ class MomentumHunterBot:
                     details['crossover'] = 'إيجابي'
                     logger.debug(f"تقاطع إيجابي لـ {symbol}")
                     break
-            
+        
             price_change_5 = ((latest['close'] - data.iloc[-5]['close']) / data.iloc[-5]['close']) * 100 if len(data) >= 5 else 0
             price_change_15 = ((latest['close'] - data.iloc[-15]['close']) / data.iloc[-15]['close']) * 100 if len(data) >= 15 else 0
-            
+        
             details['price_change_5candles'] = round(price_change_5, 2)
             details['price_change_15candles'] = round(price_change_15, 2)
             logger.debug(f"تغير السعر {symbol}: 5 شمعات={price_change_5:.2f}%, 15 شمعة={price_change_15:.2f}%")
-            
+        
             if price_change_5 >= 2.0 and price_change_15 >= 3.0:
                 score += self.WEIGHTS['price_change']
-            
+        
             volume_ratio = latest['volume_ratio']
             details['volume_ratio'] = round(volume_ratio, 2) if not pd.isna(volume_ratio) else 1
             logger.debug(f"نسبة الحجم {symbol}: {volume_ratio:.2f}")
-            
+        
             if volume_ratio >= 1.8:
                 score += self.WEIGHTS['volume']
-            
+        
             details['rsi'] = round(latest['rsi'], 2) if not pd.isna(latest['rsi']) else 50
             logger.debug(f"RSI {symbol}: {details['rsi']}")
-            
+        
             if 40 <= latest['rsi'] <= 65:
                 score += self.WEIGHTS['rsi']
-            
+        
             if latest['macd'] > latest['macd_signal'] and latest['macd_hist'] > 0:
                 score += self.WEIGHTS['macd']
                 details['macd'] = 'إيجابي'
                 logger.debug(f"MACD إيجابي لـ {symbol}")
-            
+        
             details['adx'] = round(latest['adx'], 2) if not pd.isna(latest['adx']) else 0
             logger.debug(f"ADX {symbol}: {details['adx']}")
             if latest['adx'] >= 25:
@@ -1201,24 +1201,18 @@ class MomentumHunterBot:
             elif latest['adx'] >= 20:
                 score += self.WEIGHTS['adx'] * 0.6
                 details['adx_strength'] = 'متوسط'
-            
+        
             if latest['close'] > latest['middle_bb']:
                 score += self.WEIGHTS['bollinger']
                 details['bollinger'] = 'فوق المتوسط'
-            
+        
             details['current_price'] = latest['close']
             details['atr'] = latest['atr'] if not pd.isna(latest['atr']) else 0
             details['atr_percent'] = round((latest['atr'] / latest['close']) * 100, 2) if latest['atr'] > 0 else 0
-            
+        
             if self.ml_model:
                 try:
-                    input_data = np.array([[
-                        score,
-                        details.get('rsi', 50),
-                        details.get('adx', 0),
-                        details.get('volume_ratio', 1),
-                        details.get('atr_percent', 0)
-                    ]])
+                    input_data = np.array([[score, details.get('rsi', 50), details.get('adx', 0), details.get('volume_ratio', 1), details.get('atr_percent', 0)]])
                     pred_prob = self.ml_model.predict_proba(input_data)[0][1]
                     score += pred_prob * 20
                     score = min(score, 100)
