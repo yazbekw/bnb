@@ -159,7 +159,7 @@ class MomentumHunterBot:
         'data_interval': '5m',
         'rescan_interval_minutes': 15,
         'request_delay_ms': 100,
-        'trade_timeout_hours': 2,
+        'trade_timeout_hours': 6,
         'min_asset_value_usdt': 10,
     }
 
