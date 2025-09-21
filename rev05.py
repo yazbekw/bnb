@@ -2,7 +2,6 @@ import os
 import pandas as pd
 import numpy as np
 from binance.client import Client
-from binance import ThreadedWebsocketManager
 from binance.enums import *
 import time
 from datetime import datetime, timedelta
@@ -61,74 +60,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class BinanceWebSocket:
-    def __init__(self, symbols):
-        self.twm = ThreadedWebsocketManager()
-        self.symbols = symbols
-        self.prices = {}
-        self.connected = False
-        self.last_update = {}
-        
-    def start(self):
-        """بدء اتصال WebSocket"""
-        try:
-            self.twm.start()
-            self.connected = True
-            
-            # الاشتراك في أسعار جميع الرموز
-            for symbol in self.symbols:
-                self.twm.start_symbol_ticker_socket(
-                    symbol=symbol,
-                    callback=self.handle_price_update
-                )
-            
-            logger.info(f"✅ بدء WebSocket لـ {len(self.symbols)} رمز")
-            time.sleep(3)  # انتظار استقرار الاتصال
-            
-        except Exception as e:
-            logger.error(f"❌ فشل بدء WebSocket: {e}")
-            self.connected = False
-
-    def handle_price_update(self, msg):
-        """معالجة تحديثات الأسعار"""
-        try:
-            symbol = msg['s']
-            price = float(msg['c'])
-            self.prices[symbol] = {
-                'price': price,
-                'timestamp': datetime.now(damascus_tz),
-                'volume': float(msg['v']),
-                'price_change': float(msg['p']),
-                'price_change_percent': float(msg['P'])
-            }
-            self.last_update[symbol] = time.time()
-        except Exception as e:
-            logger.error(f"خطأ في تحديث السعر: {e}")
-
-    def get_price(self, symbol):
-        """جلب السعر من الذاكرة مع التحقق من التحديث"""
-        if symbol not in self.prices:
-            return None
-            
-        # التحقق إذا كان السعر حديث (أقل من 30 ثانية)
-        last_update = self.last_update.get(symbol, 0)
-        if time.time() - last_update > 30:
-            logger.warning(f"⚠️ سعر {symbol} قديم، يتم تجديده")
-            return None
-            
-        return self.prices[symbol]['price']
-
-    def is_connected(self):
-        """التحقق من حالة الاتصال"""
-        return self.connected and self.prices
-
-    def stop(self):
-        """إيقاف WebSocket"""
-        if self.connected:
-            self.twm.stop()
-            self.connected = False
-            logger.info("✅ تم إيقاف WebSocket")
-
 class TelegramNotifier:
     def __init__(self, token, chat_id):
         self.token = token
@@ -158,7 +89,7 @@ class TelegramNotifier:
     def _send_message_immediate(self, message, message_type='info'):
         try:
             current_time = time.time()
-            if message_type in self.last_notifications and (current_time - self.last_notifications[message_type] < 300):
+            if message_type in self.last_notifications and (current_time - self.last_notifications[message_type] < 600):
                 return True
             self.last_notifications[message_type] = current_time
             url = f"{self.base_url}/sendMessage"
@@ -230,7 +161,6 @@ class MomentumHunterBot:
         'request_delay_ms': 200,
         'trade_timeout_hours': 6,
         'min_asset_value_usdt': 10,
-        'websocket_timeout_seconds': 30,
     }
 
     WEIGHTS = {
@@ -260,10 +190,8 @@ class MomentumHunterBot:
         self.symbols = self.get_all_trading_symbols()
         self.stable_coins = ['USDT', 'BUSD', 'USDC']
         self.last_scan_time = datetime.now(damascus_tz)
-
-        # تهيئة WebSocket
-        self.ws_manager = BinanceWebSocket(self.symbols)
-        self.start_websocket()
+        self.price_cache = {}  # Cache for prices: {symbol: (price, timestamp)}
+        self.historical_data_cache = {}  # Cache for historical data: {(symbol, interval, limit): (data, timestamp)}
 
         # تحميل الصفقات المفتوحة عند التشغيل
         self.load_existing_trades()
@@ -271,24 +199,6 @@ class MomentumHunterBot:
         
         if self.notifier:
             self.notifier.send_message(f"🚀 <b>بدء تشغيل البوت</b>\nتم تحميل {len(self.active_trades)} صفقة مفتوحة", 'startup')
-
-    def start_websocket(self):
-        """بدء WebSocket في thread منفصل"""
-        def ws_thread():
-            try:
-                self.ws_manager.start()
-                # الانتظار للتأكد من الاتصال
-                time.sleep(5)
-                if self.ws_manager.is_connected():
-                    logger.info("✅ WebSocket متصل بنجاح")
-                    if self.notifier:
-                        self.notifier.send_message("📡 <b>WebSocket متصل</b>\nتم بدء الاتصال المباشر مع Binance", 'websocket_connected')
-                else:
-                    logger.warning("⚠️ WebSocket غير متصل، سيتم استخدام REST API")
-            except Exception as e:
-                logger.error(f"❌ فشل بدء WebSocket: {e}")
-
-        threading.Thread(target=ws_thread, daemon=True).start()
 
     def load_existing_trades(self):
         """تحميل الصفقات المفتوحة من رصيد Binance (balances)"""
@@ -298,6 +208,7 @@ class MomentumHunterBot:
             
             self.active_trades.clear()  # مسح الصفقات القديمة لإعادة المزامنة
             loaded_count = 0
+            symbols_to_fetch = []
             for balance in balances:
                 asset = balance['asset']
                 free_qty = float(balance['free'])
@@ -306,8 +217,18 @@ class MomentumHunterBot:
                     if symbol not in self.symbols:
                         logger.warning(f"⚠️ الرمز {symbol} غير مدعوم - تخطي")
                         continue
-                    
-                    current_price = self.get_current_price(symbol)
+                    symbols_to_fetch.append(symbol)
+            
+            if symbols_to_fetch:
+                tickers = self.get_multiple_tickers(symbols_to_fetch)
+                prices = {ticker['symbol']: float(ticker['lastPrice']) for ticker in tickers if ticker}
+
+            for balance in balances:
+                asset = balance['asset']
+                free_qty = float(balance['free'])
+                if asset not in self.stable_coins and free_qty > 0:
+                    symbol = asset + 'USDT'
+                    current_price = prices.get(symbol)
                     if current_price is None:
                         logger.warning(f"⚠️ تعذر جلب سعر {symbol} - تخطي")
                         continue
@@ -344,8 +265,7 @@ class MomentumHunterBot:
                         'timestamp': datetime.now(damascus_tz),
                         'status': 'open',
                         'order_id': 'from_balance',
-                        'first_profit_taken': False,
-                        'last_check': datetime.now(damascus_tz)
+                        'first_profit_taken': False
                     }
                     self.active_trades[symbol] = trade_data
                     loaded_count += 1
@@ -388,31 +308,6 @@ class MomentumHunterBot:
                 self.notifier.send_message(f"❌ <b>خطأ في طلب Binance</b>\n{e}", 'error')
             return None
 
-    def fallback_get_price(self, symbol):
-        """طريقة احتياطية لجلب السعر عبر REST API"""
-        try:
-            ticker = self.safe_binance_request(self.client.get_symbol_ticker, symbol=symbol)
-            return float(ticker['price']) if ticker else None
-        except Exception as e:
-            logger.error(f"خطأ في جلب سعر {symbol} (fallback): {e}")
-            return None
-
-    def get_current_price(self, symbol):
-        """جلب السعر الحالي مع优先使用 WebSocket"""
-        try:
-            # محاولة استخدام WebSocket أولاً
-            if self.ws_manager.is_connected():
-                ws_price = self.ws_manager.get_price(symbol)
-                if ws_price is not None:
-                    return ws_price
-            
-            # fallback إلى REST API إذا فشل WebSocket
-            return self.fallback_get_price(symbol)
-            
-        except Exception as e:
-            logger.error(f"خطأ في جلب سعر {symbol}: {e}")
-            return None
-
     async def fetch_ticker_async(self, symbol, session):
         try:
             url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
@@ -434,13 +329,33 @@ class MomentumHunterBot:
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self.get_multiple_tickers_async(symbols))
+            results = loop.run_until_complete(self.get_multiple_tickers_async(symbols))
+            return [r for r in results if r and not isinstance(r, Exception)]
         except Exception as e:
             logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
             return []
 
+    def get_current_price(self, symbol):
+        try:
+            if symbol in self.price_cache:
+                price, timestamp = self.price_cache[symbol]
+                if time.time() - timestamp < 300:  # 5 minutes cache
+                    return price
+            ticker = self.safe_binance_request(self.client.get_symbol_ticker, symbol=symbol)
+            price = float(ticker['price'])
+            self.price_cache[symbol] = (price, time.time())
+            return price
+        except Exception as e:
+            logger.error(f"خطأ في جلب سعر {symbol}: {e}")
+            return None
+
     def get_historical_data(self, symbol, interval='15m', limit=20):
         try:
+            cache_key = (symbol, interval, limit)
+            if cache_key in self.historical_data_cache:
+                data, timestamp = self.historical_data_cache[cache_key]
+                if time.time() - timestamp < 300:  # 5 minutes cache
+                    return data
             klines = self.safe_binance_request(self.client.get_klines, symbol=symbol, interval=interval, limit=limit)
             data = pd.DataFrame(klines, columns=[
                 'timestamp', 'open', 'high', 'low', 'close', 'volume',
@@ -451,6 +366,7 @@ class MomentumHunterBot:
             data['volume'] = data['volume'].astype(float)
             data['high'] = data['high'].astype(float)
             data['low'] = data['low'].astype(float)
+            self.historical_data_cache[cache_key] = (data, time.time())
             return data
         except Exception as e:
             logger.error(f"خطأ في جلب البيانات لـ {symbol}: {e}")
@@ -480,7 +396,7 @@ class MomentumHunterBot:
 
     def calculate_momentum_score(self, symbol):
         try:
-            data = self.get_historical_data(symbol, self.TRADING_SETTINGS['data_interval'], 100)
+            data = self.get_historical_data(symbol, self.TRADING_SETTINGS['data_interval'], 50)
             if data is None or len(data) < 20:
                 return 0, {}
 
@@ -595,8 +511,7 @@ class MomentumHunterBot:
                         'timestamp': datetime.now(damascus_tz),
                         'status': 'open',
                         'order_id': order['orderId'],
-                        'first_profit_taken': False,
-                        'last_check': datetime.now(damascus_tz)
+                        'first_profit_taken': False
                     }
                     self.active_trades[symbol] = trade_data
                     logger.info(f"✅ صفقة جديدة في {symbol} بسعر {avg_price:.4f}")
@@ -617,21 +532,19 @@ class MomentumHunterBot:
             return False
 
     def manage_active_trades(self):
+        if not self.active_trades:
+            return
+        symbols = list(self.active_trades.keys())
+        tickers = self.get_multiple_tickers(symbols)
+        prices = {ticker['symbol']: float(ticker['lastPrice']) for ticker in tickers if ticker}
         for symbol, trade in list(self.active_trades.items()):
             try:
-                # تخطي الصفقات التي تم فحصها مؤخراً
-                if (datetime.now(damascus_tz) - trade['last_check']).total_seconds() < 300:
-                    continue
-                
-                current_price = self.get_current_price(symbol)
+                current_price = prices.get(symbol) or self.get_current_price(symbol)
                 if current_price is None:
                     continue
 
                 pnl_percent = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
                 trade_duration = (datetime.now(damascus_tz) - trade['timestamp']).total_seconds() / 3600
-
-                # تحديث وقت الفحص الأخير
-                trade['last_check'] = datetime.now(damascus_tz)
 
                 # أخذ ربح جزئي عند تحقيق 0.65%
                 if pnl_percent >= self.TRADING_SETTINGS['first_profit_target'] and not trade['first_profit_taken']:
@@ -782,9 +695,12 @@ class MomentumHunterBot:
         if not self.active_trades:
             logger.info("لا صفقات مفتوحة حاليًا")
             return
+        symbols = list(self.active_trades.keys())
+        tickers = self.get_multiple_tickers(symbols)
+        prices = {ticker['symbol']: float(ticker['lastPrice']) for ticker in tickers if ticker}
         for symbol, trade in self.active_trades.items():
             try:
-                current_price = self.get_current_price(symbol)
+                current_price = prices.get(symbol) or self.get_current_price(symbol)
                 if current_price is None:
                     continue
                 net_pnl = ((current_price - trade['entry_price']) * trade['quantity']) - (trade['trade_size'] * 0.001)
@@ -835,7 +751,7 @@ class MomentumHunterBot:
     def run_bot(self):
         logger.info("🚀 بدء تشغيل البوت")
         schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.run_trading_cycle)
-        schedule.every(1).minute.do(self.track_open_trades)
+        schedule.every(5).minutes.do(self.track_open_trades)
         self.run_trading_cycle()
         while True:
             try:
