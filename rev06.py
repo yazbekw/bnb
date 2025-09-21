@@ -160,8 +160,8 @@ class MomentumHunterBot:
         'max_position_size': 0.35,
         'momentum_score_threshold': 70,
         'min_profit_threshold': 0.002,
-        'first_profit_target': 0.65,
-        'first_profit_percentage': 0.3,
+        'first_profit_target': 0.95,
+        'first_profit_percentage': 0.5,
         'min_required_profit': 0.01,
         'breakeven_sl_percent': 0.5,
         'min_remaining_profit': 0.2,
@@ -183,12 +183,12 @@ class MomentumHunterBot:
     }
 
     WEIGHTS = {
-        'trend': 25,
-        'macd': 20,
-        'price_change': 15,
-        'volume': 15,
-        'rsi': 10,
-        'atr': 10,
+        'trend': 17,
+        'macd': 14,
+        'price_change': 10,
+        'volume': 14,
+        'rsi': 13,
+        'atr': 12,
         'bollinger': 10,
         'vwap': 10
     }
@@ -271,14 +271,14 @@ class MomentumHunterBot:
     def get_all_trading_symbols(self):
         try:
             selected_symbols = [
-                "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                "ETHUSDT", "SOLUSDT", "XRPUSDT",
                 "DOGEUSDT", "ADAUSDT", "LTCUSDT"
             ]
             logger.info(f"✅ تم تحديد {len(selected_symbols)} رموز للتداول: {selected_symbols}")
             return selected_symbols
         except Exception as e:
             logger.error(f"خطأ في جلب الرموز: {e}")
-            return ["BNBUSDT", "ETHUSDT"]
+            return ["SOLUSDT", "ETHUSDT"]
 
     def safe_binance_request(self, func, *args, **kwargs):
         try:
