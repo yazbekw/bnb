@@ -159,7 +159,8 @@ class MomentumHunterBot:
         'data_interval': '5m',
         'rescan_interval_minutes': 15,
         'request_delay_ms': 100,
-        'trade_timeout_hours': 2,  # إضافة حد زمني لإغلاق الصفقات
+        'trade_timeout_hours': 2,
+        'min_asset_value_usdt': 10,
     }
 
     WEIGHTS = {
@@ -198,43 +199,78 @@ class MomentumHunterBot:
             self.notifier.send_message(f"🚀 <b>بدء تشغيل البوت</b>\nتم تحميل {len(self.active_trades)} صفقة مفتوحة", 'startup')
 
     def load_existing_trades(self):
-        """تحميل الصفقات المفتوحة من Binance"""
+        """تحميل الصفقات المفتوحة من رصيد Binance (balances)"""
         try:
-            open_orders = self.safe_binance_request(self.client.get_open_orders)
-            open_positions = self.safe_binance_request(self.client.get_account)['balances']
+            account = self.safe_binance_request(self.client.get_account)
+            balances = account['balances']
             
-            self.active_trades.clear()  # مسح الصفقات القديمة
-            for order in open_orders:
-                if order['side'] == 'BUY' and order['status'] == 'FILLED':
-                    symbol = order['symbol']
+            self.active_trades.clear()  # مسح الصفقات القديمة لإعادة المزامنة
+            loaded_count = 0
+            for balance in balances:
+                asset = balance['asset']
+                free_qty = float(balance['free'])
+                if asset not in self.stable_coins and free_qty > 0:
+                    symbol = asset + 'USDT'
+                    if symbol not in self.symbols:
+                        logger.warning(f"⚠️ الرمز {symbol} غير مدعوم - تخطي")
+                        continue
+                    
                     current_price = self.get_current_price(symbol)
                     if current_price is None:
+                        logger.warning(f"⚠️ تعذر جلب سعر {symbol} - تخطي")
                         continue
-
+                    
+                    asset_value_usdt = free_qty * current_price
+                    if asset_value_usdt < self.TRADING_SETTINGS['min_asset_value_usdt']:
+                        logger.info(f"⚠️ قيمة {symbol} صغيرة جدًا (${asset_value_usdt:.2f}) - تخطي")
+                        continue
+                    
+                    # جلب تاريخ التداولات للرمز لحساب متوسط سعر الدخول
+                    trades = self.safe_binance_request(self.client.get_my_trades, symbol=symbol)
+                    if not trades:
+                        logger.warning(f"⚠️ لا تداولات سابقة لـ {symbol} - استخدام سعر حالي كافتراضي")
+                        entry_price = current_price
+                    else:
+                        buy_trades = [t for t in trades if t['isBuyer']]
+                        if not buy_trades:
+                            logger.warning(f"⚠️ لا تداولات شراء لـ {symbol} - تخطي")
+                            continue
+                        
+                        # حساب متوسط سعر الدخول المرجح
+                        total_qty = sum(float(t['qty']) for t in buy_trades)
+                        total_cost = sum(float(t['qty']) * float(t['price']) for t in buy_trades)
+                        entry_price = total_cost / total_qty if total_qty > 0 else current_price
+                    
                     # إنشاء بيانات الصفقة
                     trade_data = {
                         'symbol': symbol,
-                        'entry_price': float(order['price']),
-                        'quantity': float(order['executedQty']),
-                        'trade_size': float(order['executedQty']) * float(order['price']),
-                        'stop_loss': current_price * 0.98,  # افتراضي
-                        'take_profit': current_price * 1.04,  # افتراضي
-                        'timestamp': datetime.fromtimestamp(order['time'] / 1000, tz=damascus_tz),
+                        'entry_price': entry_price,
+                        'quantity': free_qty,
+                        'trade_size': free_qty * entry_price,
+                        'stop_loss': entry_price * 0.98,
+                        'take_profit': entry_price * 1.04,
+                        'timestamp': datetime.now(damascus_tz),
                         'status': 'open',
-                        'order_id': order['orderId'],
+                        'order_id': 'from_balance',
                         'first_profit_taken': False
                     }
                     self.active_trades[symbol] = trade_data
-                    logger.info(f"✅ تم تحميل الصفقة من Binance: {symbol}")
+                    loaded_count += 1
+                    logger.info(f"✅ تم تحميل الصفقة من رصيد Binance: {symbol} - كمية: {free_qty:.6f} - سعر دخول: ${entry_price:.4f}")
                     if self.notifier:
                         self.notifier.send_message(
-                            f"📥 <b>صفقة مفتوحة محملة</b>\nالعملة: {symbol}\nسعر الدخول: ${trade_data['entry_price']:.4f}\nالكمية: {trade_data['quantity']:.6f}",
+                            f"📥 <b>صفقة مفتوحة محملة من الرصيد</b>\nالعملة: {symbol}\nسعر الدخول: ${entry_price:.4f}\nالكمية: {free_qty:.6f}\nالقيمة: ${asset_value_usdt:.2f}",
                             f'load_{symbol}'
                         )
+            
+            if loaded_count == 0:
+                logger.info("⚠️ لا صفقات مفتوحة في الرصيد حاليًا")
+                if self.notifier:
+                    self.notifier.send_message("⚠️ <b>لا صفقات مفتوحة</b>\nتم فحص الرصيد ولم يتم العثور على أي أصول مملوكة.", 'no_trades')
         except Exception as e:
-            logger.error(f"❌ خطأ في تحميل الصفقات من Binance: {e}")
+            logger.error(f"❌ خطأ في تحميل الصفقات من رصيد Binance: {e}")
             if self.notifier:
-                self.notifier.send_message(f"❌ <b>خطأ</b>\nفشل تحميل الصفقات: {e}", 'error')
+                self.notifier.send_message(f"❌ <b>خطأ</b>\nفشل تحميل الصفقات من الرصيد: {e}", 'error')
 
     def get_all_trading_symbols(self):
         try:
