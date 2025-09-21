@@ -274,17 +274,16 @@ class MomentumHunterBot:
 
     def get_all_trading_symbols(self):
         try:
-            important_symbols = [
+            # قائمة ثابتة تحتوي على العملات العشرة المحددة
+            selected_symbols = [
                 "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-                "AVAXUSDT", "XLMUSDT", "SUIUSDT", "TONUSDT", "WLDUSDT",
-                "ADAUSDT", "DOTUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT"
+                "DOGEUSDT", "ADAUSDT", "DOTUSDT", "LTCUSDT", "LINKUSDT"
             ]
-            tickers = self.safe_binance_request(self.client.get_ticker)
-            dynamic_symbols = [ticker['symbol'] for ticker in tickers if float(ticker['volume']) * float(ticker['lastPrice']) > self.TRADING_SETTINGS['min_daily_volume']]
-            return list(set(important_symbols + dynamic_symbols))
+            logger.info(f"✅ تم تحديد {len(selected_symbols)} رموز للتداول: {selected_symbols}")
+            return selected_symbols
         except Exception as e:
             logger.error(f"خطأ في جلب الرموز: {e}")
-            return important_symbols
+            return ["BTCUSDT", "ETHUSDT"]  # قائمة احتياطية صغيرة في حالة الخطأ
 
     def safe_binance_request(self, func, *args, **kwargs):
         try:
