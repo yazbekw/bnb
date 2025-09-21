@@ -69,7 +69,7 @@ def run_flask_app():
     app.run(host='0.0.0.0', port=port, debug=False)
 
 # -------------------------
-# Telegram Notifier (مع تحسين الرسائل)
+# Telegram Notifier
 # -------------------------
 class TelegramNotifier:
     def __init__(self, token, chat_id):
@@ -122,7 +122,7 @@ class TelegramNotifier:
         return True
 
 # -------------------------
-# Request Manager (rate-limiting local)
+# Request Manager
 # -------------------------
 class RequestManager:
     def __init__(self):
@@ -179,7 +179,7 @@ class MomentumHunterBot:
         'request_delay_ms': 200,
         'trade_timeout_hours': 6,
         'min_asset_value_usdt': 10,
-        'slippage_margin': 1.005  # هامش انزلاق 0.5%
+        'slippage_margin': 1.005
     }
 
     WEIGHTS = {
@@ -203,7 +203,7 @@ class MomentumHunterBot:
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
 
-        self.client = Client(self.api_key, self.api_secret)
+        self.client = Client(self.api_key, self.api_secret)  # Testnet مفعل كافتراضي
         self.request_manager = RequestManager()
         self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id) if self.telegram_token and self.telegram_chat_id else None
         self.active_trades = {}
@@ -212,9 +212,8 @@ class MomentumHunterBot:
         self.last_scan_time = datetime.now(damascus_tz)
         self.price_cache = {}
         self.historical_data_cache = {}
-        self.performance_metrics = {'total_trades': 0, 'total_pnl': 0.0, 'win_rate': 0.0}  # مقياس أداء
+        self.performance_metrics = {'total_trades': 0, 'total_pnl': 0.0, 'win_rate': 0.0}
 
-        # تحميل الصفقات المفتوحة وتعديل الأوزان والمعايير
         self.load_existing_trades()
         self.adjust_dynamic_parameters()
         logger.info(f"✅ تم تحميل {len(self.active_trades)} صفقة مفتوحة")
@@ -223,12 +222,15 @@ class MomentumHunterBot:
             self.notifier.send_message(f"🚀 <b>بدء تشغيل البوت</b>\nتم تحميل {len(self.active_trades)} صفقة مفتوحة\nالأداء الحالي: ربح إجمالي ${self.performance_metrics['total_pnl']:.2f}, نسبة النجاح {self.performance_metrics['win_rate']:.1%}", 'startup', detailed=True)
 
     def adjust_dynamic_parameters(self):
-        """ضبط الأوزان والمعايير بناءً على التقلب"""
-        symbol = self.symbols[0]  # يمكن تحسينها لكل رمز
-        volatility = self.calculate_market_volatility(symbol)
-        self.WEIGHTS = self.adjust_weights(volatility)
-        self.TRADING_SETTINGS = self.adjust_settings(volatility)
-        logger.info(f"⚙️ تم تعديل الأوزان والمعايير بناءً على التقلب: {volatility:.4f}")
+        """ضبط الأوزان والمعايير بناءً على التقلب لكل رمز"""
+        volatilities = {}
+        for symbol in self.symbols:
+            volatilities[symbol] = self.calculate_market_volatility(symbol)
+        avg_volatility = np.mean(list(volatilities.values())) if volatilities else 0.05
+
+        self.WEIGHTS = self.adjust_weights(avg_volatility)
+        self.TRADING_SETTINGS = self.adjust_settings(avg_volatility)
+        logger.info(f"⚙️ تم تعديل الأوزان والمعايير بناءً على التقلب المتوسط: {avg_volatility:.4f}")
 
     def calculate_market_volatility(self, symbol):
         """حساب مؤشر التقلب باستخدام ATR اليومي المتوسط"""
@@ -239,16 +241,16 @@ class MomentumHunterBot:
         avg_atr = indicators['atr'].mean()
         current_price = self.get_current_price(symbol) or 1.0
         volatility_index = avg_atr / current_price
-        return min(max(volatility_index, 0.01), 0.1)  # بين 1% و10%
+        return min(max(volatility_index, 0.01), 0.1)
 
     def adjust_weights(self, volatility):
         """ضبط الأوزان ديناميكيًا بناءً على التقلب"""
         base_weights = self.WEIGHTS.copy()
-        if volatility > 0.05:  # تقلب مرتفع (>5%)
+        if volatility > 0.05:
             base_weights['atr'] *= 1.5
             base_weights['bollinger'] *= 1.2
             base_weights['price_change'] *= 0.8
-        else:  # تقلب منخفض
+        else:
             base_weights['trend'] *= 1.2
             base_weights['macd'] *= 1.1
         total_weight = sum(base_weights.values())
@@ -269,8 +271,8 @@ class MomentumHunterBot:
     def get_all_trading_symbols(self):
         try:
             selected_symbols = [
-                "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-                "DOGEUSDT", "ADAUSDT", "DOTUSDT", "LTCUSDT", "LINKUSDT"
+                "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                "DOGEUSDT", "ADAUSDT", "DOTUSDT", "LTCUSDT"
             ]
             logger.info(f"✅ تم تحديد {len(selected_symbols)} رموز للتداول: {selected_symbols}")
             return selected_symbols
@@ -367,11 +369,9 @@ class MomentumHunterBot:
             if len(data) < 21:
                 return data
 
-            # EMA
             data['ema8'] = data['close'].ewm(span=8, adjust=False).mean()
             data['ema21'] = data['close'].ewm(span=21, adjust=False).mean()
 
-            # RSI
             delta = data['close'].diff()
             gain = delta.where(delta > 0, 0)
             loss = -delta.where(delta < 0, 0)
@@ -380,34 +380,29 @@ class MomentumHunterBot:
             rs = avg_gain / (avg_loss + 1e-12)
             data['rsi'] = 100 - (100 / (1 + rs))
 
-            # MACD (12,26,9)
             ema12 = data['close'].ewm(span=12, adjust=False).mean()
             ema26 = data['close'].ewm(span=26, adjust=False).mean()
             data['macd'] = ema12 - ema26
             data['macd_signal'] = data['macd'].ewm(span=9, adjust=False).mean()
             data['macd_hist'] = data['macd'] - data['macd_signal']
 
-            # ATR (14)
             high_low = data['high'] - data['low']
             high_close_prev = (data['high'] - data['close'].shift()).abs()
             low_close_prev = (data['low'] - data['close'].shift()).abs()
             tr = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
             data['atr'] = tr.rolling(window=14).mean()
 
-            # Bollinger Bands (20,2)
             sma20 = data['close'].rolling(window=20).mean()
             std20 = data['close'].rolling(window=20).std()
             data['bb_middle'] = sma20
             data['bb_upper'] = sma20 + 2 * std20
             data['bb_lower'] = sma20 - 2 * std20
 
-            # VWAP
             typical_price = (data['high'] + data['low'] + data['close']) / 3
             cum_vol = data['volume'].cumsum()
             cum_vtp = (typical_price * data['volume']).cumsum()
             data['vwap'] = cum_vtp / (cum_vol.replace(0, np.nan))
 
-            # Volume metrics
             data['volume_ma'] = data['volume'].rolling(window=20).mean()
             data['volume_ratio'] = data['volume'] / (data['volume_ma'] + 1e-12)
 
@@ -432,14 +427,12 @@ class MomentumHunterBot:
             score = 0
             details = {}
 
-            # Trend: EMA8 above EMA21
             if latest['ema8'] > latest['ema21']:
                 score += self.WEIGHTS['trend']
                 details['trend'] = 'bullish'
             else:
                 details['trend'] = 'bearish'
 
-            # MACD crossover
             macd_cross = False
             window = indicators['macd'][-4:]
             sigwin = indicators['macd_signal'][-4:]
@@ -453,38 +446,32 @@ class MomentumHunterBot:
             else:
                 details['macd'] = 'no_cross'
 
-            # Price change over last 5 candles (%)
             price_change_5 = ((latest['close'] - indicators['close'].iloc[-6]) / indicators['close'].iloc[-6]) * 100 if len(indicators) >= 6 else 0.0
             details['price_change_5'] = round(price_change_5, 3)
             if price_change_5 >= self.TRADING_SETTINGS['min_price_change_5m']:
                 score += self.WEIGHTS['price_change']
 
-            # Volume spike
             vol_ratio = latest['volume_ratio'] if not np.isnan(latest['volume_ratio']) else 1.0
             details['volume_ratio'] = round(vol_ratio, 2)
             if vol_ratio >= self.TRADING_SETTINGS['min_volume_ratio']:
                 score += self.WEIGHTS['volume']
 
-            # RSI in acceptable zone
             rsi_val = latest['rsi'] if not np.isnan(latest['rsi']) else 50
             details['rsi'] = round(rsi_val, 2)
             if 40 < rsi_val < 70:
                 score += self.WEIGHTS['rsi']
 
-            # ATR breakout
             atr = latest['atr'] if not np.isnan(latest['atr']) else (latest['close'] * 0.02)
             details['atr'] = round(atr, 6)
             if latest['close'] > (latest['ema21'] + self.TRADING_SETTINGS['atr_multiplier_sl'] * atr):
                 score += self.WEIGHTS['atr']
 
-            # Bollinger breakout
             if not np.isnan(latest.get('bb_upper', np.nan)) and latest['close'] > latest['bb_upper']:
                 score += self.WEIGHTS['bollinger']
                 details['bollinger'] = 'upper_break'
             else:
                 details['bollinger'] = 'no_break'
 
-            # VWAP confirmation
             if not np.isnan(latest.get('vwap', np.nan)) and latest['close'] > latest['vwap']:
                 score += self.WEIGHTS['vwap']
                 details['vwap'] = 'above'
@@ -545,7 +532,7 @@ class MomentumHunterBot:
             return 0
 
     # -------------------------
-    # Execute trade (market buy) with ATR-based SL and TP
+    # Execute trade
     # -------------------------
     def execute_trade(self, symbol, opportunity):
         try:
@@ -569,7 +556,6 @@ class MomentumHunterBot:
                 logger.warning(f"❌ كمية محسوبة غير صالحة لـ {symbol}: {quantity}")
                 return False
 
-            # حساب وقف الخسارة وهدف الربح مع هامش الانزلاق
             sl_distance = atr * self.TRADING_SETTINGS['atr_multiplier_sl']
             stop_loss = current_price - (sl_distance * self.TRADING_SETTINGS['slippage_margin'])
             take_profit = current_price + (self.TRADING_SETTINGS['risk_reward_ratio'] * sl_distance * self.TRADING_SETTINGS['slippage_margin'])
@@ -592,7 +578,6 @@ class MomentumHunterBot:
                         'first_profit_taken': False,
                         'stop_order_id': None
                     }
-                    # إنشاء أمر وقف الخسارة
                     stop_order = self.safe_binance_request(
                         self.client.create_order,
                         symbol=symbol,
@@ -640,7 +625,7 @@ class MomentumHunterBot:
             return False
 
     # -------------------------
-    # Manage active trades (monitoring, partial profit, SL moves, exits)
+    # Manage active trades
     # -------------------------
     def manage_active_trades(self):
         if not self.active_trades:
@@ -658,12 +643,10 @@ class MomentumHunterBot:
                 pnl_percent = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
                 trade_duration = (datetime.now(damascus_tz) - trade['timestamp']).total_seconds() / 3600
 
-                # أخذ ربح جزئي
                 if pnl_percent >= self.TRADING_SETTINGS['first_profit_target'] and not trade['first_profit_taken']:
                     self.take_partial_profit(symbol, self.TRADING_SETTINGS['first_profit_percentage'], 'first_profit')
                     trade['first_profit_taken'] = True
 
-                # تحريك وقف الخسارة
                 if trade['first_profit_taken'] and pnl_percent >= self.TRADING_SETTINGS['breakeven_sl_percent']:
                     new_sl = trade['entry_price'] * 1.002
                     if new_sl > trade['stop_loss']:
@@ -692,7 +675,6 @@ class MomentumHunterBot:
                                 f'sl_update_{symbol}', detailed=True
                             )
 
-                # جمع بيانات قصيرة لتقييم RSI/EMA
                 data_5m = self.get_historical_data(symbol, '5m', 30)
                 if data_5m is not None and len(data_5m) >= 15:
                     indicators_5m = self.calculate_technical_indicators(data_5m)
@@ -701,7 +683,6 @@ class MomentumHunterBot:
                         self.close_trade(symbol, current_price, 'overbought')
                         continue
 
-                # خروج عند انعكاس EMA
                 data_short = self.get_historical_data(symbol, self.TRADING_SETTINGS['data_interval'], 20)
                 if data_short is not None and len(data_short) >= 10:
                     ind = self.calculate_technical_indicators(data_short)
@@ -711,12 +692,10 @@ class MomentumHunterBot:
                         self.close_trade(symbol, current_price, 'trend_reversal')
                         continue
 
-                # للخروج عند فقدان الربح المتبقي
                 if trade['first_profit_taken'] and pnl_percent < self.TRADING_SETTINGS['min_remaining_profit']:
                     self.close_trade(symbol, current_price, 'low_profit')
                     continue
 
-                # خروج عند انتهاء الوقت
                 if trade_duration > self.TRADING_SETTINGS['trade_timeout_hours']:
                     self.close_trade(symbol, current_price, 'timeout')
                     continue
@@ -825,7 +804,6 @@ class MomentumHunterBot:
                     trade['pnl_percent'] = total_profit_percent
                     trade['status'] = 'completed'
                     trade['exit_reason'] = reason
-                    # تحديث مقياس الأداء
                     self.performance_metrics['total_trades'] += 1
                     self.performance_metrics['total_pnl'] += total_net_pnl
                     win_rate = len([t for t in self.active_trades.values() if t.get('pnl_percent', 0) > 0]) / self.performance_metrics['total_trades'] if self.performance_metrics['total_trades'] > 0 else 0.0
@@ -850,7 +828,7 @@ class MomentumHunterBot:
             return False
 
     # -------------------------
-    # Track open trades (reporting)
+    # Track open trades
     # -------------------------
     def track_open_trades(self):
         if not self.active_trades:
@@ -889,7 +867,7 @@ class MomentumHunterBot:
         return reasons.get(reason, reason)
 
     # -------------------------
-    # Main trading cycle: find opportunities and open trades
+    # Main trading cycle
     # -------------------------
     async def find_best_opportunities(self):
         opportunities = []
@@ -933,7 +911,7 @@ class MomentumHunterBot:
                 else:
                     logger.info("🔍 لا فرص مناسبة")
             self.last_scan_time = datetime.now(damascus_tz)
-            self.adjust_dynamic_parameters()  # تحديث الأوزان والمعايير دوريًا
+            self.adjust_dynamic_parameters()
         except Exception as e:
             logger.error(f"❌ خطأ في دورة التداول: {e}")
             if self.notifier:
@@ -943,7 +921,7 @@ class MomentumHunterBot:
         logger.info("🚀 بدء تشغيل البوت")
         schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.run_trading_cycle)
         schedule.every(5).minutes.do(self.track_open_trades)
-        schedule.every(6).hours.do(lambda: self.adjust_dynamic_parameters())  # مراجعة دورية للتقلب
+        schedule.every(6).hours.do(self.adjust_dynamic_parameters)
         self.run_trading_cycle()
         while True:
             try:
@@ -954,7 +932,7 @@ class MomentumHunterBot:
                 time.sleep(60)
 
     # -------------------------
-    # Load existing trades from balances
+    # Load existing trades
     # -------------------------
     def load_existing_trades(self):
         try:
@@ -1046,7 +1024,7 @@ def main():
     try:
         flask_thread = threading.Thread(target=run_flask_app, daemon=True)
         flask_thread.start()
-        bot = MomentumHunterBot(dry_run=True)  # قم بتعيين dry_run=False للتداول الحقيقي
+        bot = MomentumHunterBot(dry_run=False)  # تفعيل التداول الحقيقي (غيّر إلى False)
         bot.run_bot()
     except Exception as e:
         logger.error(f"❌ خطأ فادح في البوت: {e}")
