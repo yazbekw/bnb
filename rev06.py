@@ -271,7 +271,7 @@ class MomentumHunterBot:
     def get_all_trading_symbols(self):
         try:
             selected_symbols = [
-                "ETHUSDT", "SOLUSDT", "XRPUSDT",
+                "ETHUSDT", "SOLUSDT", "BTCUSDT", "XRPUSDT",
                 "DOGEUSDT", "ADAUSDT", "LTCUSDT"
             ]
             logger.info(f"✅ تم تحديد {len(selected_symbols)} رموز للتداول: {selected_symbols}")
