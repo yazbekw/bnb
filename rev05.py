@@ -579,7 +579,7 @@ class MomentumHunterBot:
                 if data is not None and len(data) >= 5:
                     ema8 = data['close'].ewm(span=8, adjust=False).mean().iloc[-3:]
                     ema21 = data['close'].ewm(span=21, adjust=False).mean().iloc[-3:]
-                    if all(ema8 < ema21):
+                    if all(ema8 < ema21) and (current_price < trade['entry_price'] * 0.99):
                         self.close_trade(symbol, current_price, 'trend_reversal')
                         continue
 
