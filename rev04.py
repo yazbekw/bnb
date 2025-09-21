@@ -156,9 +156,9 @@ class MomentumHunterBot:
         'max_active_trades': 3,
         'rsi_overbought': 75,
         'rsi_oversold': 35,
-        'data_interval': '5m',
-        'rescan_interval_minutes': 15,
-        'request_delay_ms': 100,
+        'data_interval': '15m',
+        'rescan_interval_minutes': 30,
+        'request_delay_ms': 200,
         'trade_timeout_hours': 6,
         'min_asset_value_usdt': 10,
     }
@@ -329,7 +329,7 @@ class MomentumHunterBot:
             logger.error(f"خطأ في جلب سعر {symbol}: {e}")
             return None
 
-    def get_historical_data(self, symbol, interval='5m', limit=100):
+    def get_historical_data(self, symbol, interval='15m', limit=20):
         try:
             klines = self.safe_binance_request(self.client.get_klines, symbol=symbol, interval=interval, limit=limit)
             data = pd.DataFrame(klines, columns=[
@@ -412,7 +412,7 @@ class MomentumHunterBot:
 
     async def find_best_opportunities(self):
         opportunities = []
-        symbols_to_analyze = self.symbols[:50]
+        symbols_to_analyze = self.symbols[:10]
         tickers = await self.get_multiple_tickers_async(symbols_to_analyze)
 
         for symbol, ticker in zip(symbols_to_analyze, tickers):
