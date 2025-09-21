@@ -272,13 +272,13 @@ class MomentumHunterBot:
         try:
             selected_symbols = [
                 "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-                "DOGEUSDT", "ADAUSDT", "DOTUSDT", "LTCUSDT"
+                "DOGEUSDT", "ADAUSDT", "LTCUSDT"
             ]
             logger.info(f"✅ تم تحديد {len(selected_symbols)} رموز للتداول: {selected_symbols}")
             return selected_symbols
         except Exception as e:
             logger.error(f"خطأ في جلب الرموز: {e}")
-            return ["BTCUSDT", "ETHUSDT"]
+            return ["BNBUSDT", "ETHUSDT"]
 
     def safe_binance_request(self, func, *args, **kwargs):
         try:
