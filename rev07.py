@@ -210,24 +210,27 @@ class MomentumHunterBot:
     def get_multiple_tickers(self, symbols):
         try:
             loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # استخدام coroutine thread-safe إذا كانت الحلقة تعمل
-                async def fetch_tickers():
-                    async with aiohttp.ClientSession() as session:
-                        tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
-                        return await asyncio.gather(*tasks, return_exceptions=True)
-                future = asyncio.run_coroutine_threadsafe(fetch_tickers(), loop)
-                tickers = future.result(timeout=10)
-            else:
-                async def fetch_tickers():
-                    async with aiohttp.ClientSession() as session:
-                        tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
-                        return await asyncio.gather(*tasks, return_exceptions=True)
-                tickers = asyncio.run(fetch_tickers())
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    
+        try:
+            async def fetch_tickers():
+                async with aiohttp.ClientSession() as session:
+                    tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
+                    return await asyncio.gather(*tasks, return_exceptions=True)
+        
+            tickers = loop.run_until_complete(fetch_tickers())
             return [t for t in tickers if t and not isinstance(t, Exception)]
         except Exception as e:
             logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
             return []
+        finally:
+            if not loop.is_running():
+                loop.close()
 
     def get_current_price(self, symbol):
         try:
