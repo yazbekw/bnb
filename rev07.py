@@ -152,8 +152,8 @@ class RequestManager:
 class MomentumHunterBot:
     TRADING_SETTINGS = {
         'min_daily_volume': 1000000,
-        'min_trade_size': 10,
-        'max_trade_size': 50,
+        'min_trade_size': 5,
+        'max_trade_size': 10,
         'max_position_size': 0.35,
         'momentum_score_threshold': 70,
         'min_profit_threshold': 0.03,  # 3% target profit
