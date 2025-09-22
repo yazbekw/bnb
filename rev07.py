@@ -171,8 +171,6 @@ class MomentumHunterBot:
         self.last_scan_time = datetime.now(damascus_tz)
         self.price_cache = {}
         self.historical_data_cache = {}
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
 
         self.load_existing_trades()
         logger.info(f"✅ تم تحميل {len(self.active_trades)} صفقة مفتوحة")
@@ -198,7 +196,11 @@ class MomentumHunterBot:
             url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
             async with session.get(url, timeout=10) as response:
                 if response.status == 200:
-                    return await response.json()
+                    data = await response.json()
+                    if data.get('code') or not data.get('symbol'):
+                        logger.warning(f"استجابة غير صالحة من API لـ {symbol}: {data}")
+                        return None
+                    return data
                 logger.error(f"فشل جلب {symbol}: {response.status}")
                 return None
         except Exception as e:
@@ -207,13 +209,21 @@ class MomentumHunterBot:
 
     def get_multiple_tickers(self, symbols):
         try:
-            loop = self.loop
-            asyncio.set_event_loop(loop)
-            async def fetch_tickers():
-                async with aiohttp.ClientSession() as session:
-                    tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
-                    return await asyncio.gather(*tasks, return_exceptions=True)
-            tickers = loop.run_until_complete(fetch_tickers())
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # استخدام coroutine thread-safe إذا كانت الحلقة تعمل
+                async def fetch_tickers():
+                    async with aiohttp.ClientSession() as session:
+                        tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
+                        return await asyncio.gather(*tasks, return_exceptions=True)
+                future = asyncio.run_coroutine_threadsafe(fetch_tickers(), loop)
+                tickers = future.result(timeout=10)
+            else:
+                async def fetch_tickers():
+                    async with aiohttp.ClientSession() as session:
+                        tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
+                        return await asyncio.gather(*tasks, return_exceptions=True)
+                tickers = asyncio.run(fetch_tickers())
             return [t for t in tickers if t and not isinstance(t, Exception)]
         except Exception as e:
             logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
@@ -225,9 +235,9 @@ class MomentumHunterBot:
                 price, timestamp = self.price_cache[symbol]
                 if time.time() - timestamp < 300:
                     return price
-            ticker = self.get_multiple_tickers([symbol])
-            if ticker and len(ticker) > 0:
-                price = float(ticker[0].get('lastPrice', 0))
+            tickers = self.get_multiple_tickers([symbol])
+            if tickers and len(tickers) > 0 and 'lastPrice' in tickers[0]:
+                price = float(tickers[0]['lastPrice'])
                 self.price_cache[symbol] = (price, time.time())
                 return price
             return None
@@ -520,8 +530,7 @@ class MomentumHunterBot:
 
     async def find_best_opportunities(self):
         opportunities = []
-        symbols = self.TRADING_SETTINGS['symbols']
-        tickers = self.get_multiple_tickers(symbols)
+        tickers = self.get_multiple_tickers(self.TRADING_SETTINGS['symbols'])
         if not tickers:
             logger.warning("⚠️ لا تيكرز متاحة من API Binance")
             return opportunities
@@ -545,9 +554,12 @@ class MomentumHunterBot:
             logger.info("🔄 بدء دورة التداول")
             self.manage_active_trades()
             if len(self.active_trades) < self.TRADING_SETTINGS['max_active_trades']:
-                loop = self.loop
-                asyncio.set_event_loop(loop)
-                opportunities = loop.run_until_complete(self.find_best_opportunities())
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(self.find_best_opportunities(), loop)
+                    opportunities = future.result(timeout=10)
+                else:
+                    opportunities = asyncio.run(self.find_best_opportunities())
                 if opportunities:
                     logger.info(f"🔍 تم العثور على {len(opportunities)} فرصة")
                     for opportunity in opportunities[:2]:
