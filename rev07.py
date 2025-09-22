@@ -49,7 +49,11 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return {'status': 'healthy', 'service': 'momentum-hunter-bot', 'timestamp': datetime.now(damascus_tz).isoformat()}
+    return jsonify({
+        'status': 'healthy',
+        'service': 'momentum-hunter-bot',
+        'timestamp': datetime.now(damascus_tz).isoformat()
+    })
 
 def run_flask_app():
     port = int(os.environ.get('PORT', 10000))
@@ -207,30 +211,15 @@ class MomentumHunterBot:
             logger.error(f"خطأ في جلب تيكر {symbol}: {e}")
             return None
 
-    def get_multiple_tickers(self, symbols):
+    async def get_multiple_tickers(self, symbols):
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-    
-        try:
-            async def fetch_tickers():
-                async with aiohttp.ClientSession() as session:
-                    tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
-                    return await asyncio.gather(*tasks, return_exceptions=True)
-        
-            tickers = loop.run_until_complete(fetch_tickers())
+            async with aiohttp.ClientSession() as session:
+                tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
+                tickers = await asyncio.gather(*tasks, return_exceptions=True)
             return [t for t in tickers if t and not isinstance(t, Exception)]
         except Exception as e:
             logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
             return []
-        finally:
-            if not loop.is_running():
-                loop.close()
 
     def get_current_price(self, symbol):
         try:
@@ -238,7 +227,7 @@ class MomentumHunterBot:
                 price, timestamp = self.price_cache[symbol]
                 if time.time() - timestamp < 300:
                     return price
-            tickers = self.get_multiple_tickers([symbol])
+            tickers = asyncio.run(self.get_multiple_tickers([symbol]))
             if tickers and len(tickers) > 0 and 'lastPrice' in tickers[0]:
                 price = float(tickers[0]['lastPrice'])
                 self.price_cache[symbol] = (price, time.time())
@@ -422,7 +411,7 @@ class MomentumHunterBot:
         if not self.active_trades:
             return
         symbols = list(self.active_trades.keys())
-        tickers = self.get_multiple_tickers(symbols)
+        tickers = asyncio.run(self.get_multiple_tickers(symbols))
         prices = {ticker['symbol']: float(ticker['lastPrice']) for ticker in tickers if ticker}
 
         for symbol, trade in list(self.active_trades.items()):
@@ -533,7 +522,7 @@ class MomentumHunterBot:
 
     async def find_best_opportunities(self):
         opportunities = []
-        tickers = self.get_multiple_tickers(self.TRADING_SETTINGS['symbols'])
+        tickers = await self.get_multiple_tickers(self.TRADING_SETTINGS['symbols'])
         if not tickers:
             logger.warning("⚠️ لا تيكرز متاحة من API Binance")
             return opportunities
@@ -552,23 +541,18 @@ class MomentumHunterBot:
                 })
         return sorted(opportunities, key=lambda x: x['score'], reverse=True)
 
-    def run_trading_cycle(self):
+    async def run_trading_cycle(self):
         try:
             logger.info("🔄 بدء دورة التداول")
             self.manage_active_trades()
             if len(self.active_trades) < self.TRADING_SETTINGS['max_active_trades']:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    future = asyncio.run_coroutine_threadsafe(self.find_best_opportunities(), loop)
-                    opportunities = future.result(timeout=10)
-                else:
-                    opportunities = asyncio.run(self.find_best_opportunities())
+                opportunities = await self.find_best_opportunities()
                 if opportunities:
                     logger.info(f"🔍 تم العثور على {len(opportunities)} فرصة")
                     for opportunity in opportunities[:2]:
                         if opportunity['symbol'] not in self.active_trades:
                             self.execute_trade(opportunity['symbol'])
-                            time.sleep(1)
+                            await asyncio.sleep(1)
                 else:
                     logger.info("🔍 لا فرص مناسبة")
             self.last_scan_time = datetime.now(damascus_tz)
@@ -577,22 +561,25 @@ class MomentumHunterBot:
             if self.notifier:
                 self.notifier.send_message(f"❌ <b>خطأ في دورة التداول</b>\n{e}", 'error')
 
-    def run_bot(self):
+    async def run_bot(self):
         logger.info("🚀 بدء تشغيل البوت")
-        schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.run_trading_cycle)
+        schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(
+            lambda: asyncio.create_task(self.run_trading_cycle())
+        )
         schedule.every(5).minutes.do(self.track_open_trades)
         flask_thread = threading.Thread(target=run_flask_app, daemon=True)
         flask_thread.start()
-        self.run_trading_cycle()
+        await self.run_trading_cycle()
+        
         while True:
             try:
                 schedule.run_pending()
-                time.sleep(1)
+                await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"خطأ في الحلقة الرئيسية: {e}")
                 if self.notifier:
                     self.notifier.send_message(f"❌ <b>خطأ في الحلقة الرئيسية</b>\n{e}", 'error')
-                time.sleep(60)
+                await asyncio.sleep(60)
 
     def load_existing_trades(self):
         try:
@@ -642,7 +629,7 @@ class MomentumHunterBot:
 def main():
     try:
         bot = MomentumHunterBot(dry_run=True)
-        bot.run_bot()
+        asyncio.run(bot.run_bot())
     except Exception as e:
         logger.error(f"❌ خطأ فادح في البوت: {e}")
         if 'bot' in locals() and bot.notifier:
