@@ -139,16 +139,16 @@ class RequestManager:
 # -------------------------
 class MomentumHunterBot:
     TRADING_SETTINGS = {
-        'symbols': ['BTCUSDT', 'ETHUSDT', 'LTCUSDT', 'XRPUSDT', 'SOLUSDT'],  # الرموز المدعومة
+        'symbols': ['BTCUSDT', 'ETHUSDT', 'LTCUSDT', 'XRPUSDT', 'SOLUSDT'],
         'data_interval': '5m',
         'sma_short': 5,
         'sma_long': 15,
         'rsi_period': 14,
         'rsi_oversold': 30,
         'rsi_overbought': 70,
-        'stop_loss_percent': -0.05,  # -5%
-        'take_profit_percent': 0.03,  # 3%
-        'risk_per_trade_usdt': 10.0,  # حجم المخاطرة 10 دولار
+        'stop_loss_percent': -0.05,
+        'take_profit_percent': 0.03,
+        'risk_per_trade_usdt': 10.0,
         'rescan_interval_minutes': 30,
         'trade_timeout_hours': 6,
         'max_active_trades': 3,
@@ -169,8 +169,10 @@ class MomentumHunterBot:
         self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id) if self.telegram_token and self.telegram_chat_id else None
         self.active_trades = {}
         self.last_scan_time = datetime.now(damascus_tz)
-        self.price_cache = {}  # Cache for prices: {symbol: (price, timestamp)}
-        self.historical_data_cache = {}  # Cache for historical data: {(symbol, interval, limit): (data, timestamp)}
+        self.price_cache = {}
+        self.historical_data_cache = {}
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
 
         self.load_existing_trades()
         logger.info(f"✅ تم تحميل {len(self.active_trades)} صفقة مفتوحة")
@@ -203,17 +205,16 @@ class MomentumHunterBot:
             logger.error(f"خطأ في جلب تيكر {symbol}: {e}")
             return None
 
-    async def get_multiple_tickers_async(self, symbols):
-        async with aiohttp.ClientSession() as session:
-            tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
-            return await asyncio.gather(*tasks, return_exceptions=True)
-
     def get_multiple_tickers(self, symbols):
         try:
-            loop = asyncio.new_event_loop()
+            loop = self.loop
             asyncio.set_event_loop(loop)
-            results = loop.run_until_complete(self.get_multiple_tickers_async(symbols))
-            return [r for r in results if r and not isinstance(r, Exception)]
+            async def fetch_tickers():
+                async with aiohttp.ClientSession() as session:
+                    tasks = [self.fetch_ticker_async(symbol, session) for symbol in symbols]
+                    return await asyncio.gather(*tasks, return_exceptions=True)
+            tickers = loop.run_until_complete(fetch_tickers())
+            return [t for t in tickers if t and not isinstance(t, Exception)]
         except Exception as e:
             logger.error(f"خطأ في جلب تيكرز متعددة: {e}")
             return []
@@ -222,14 +223,14 @@ class MomentumHunterBot:
         try:
             if symbol in self.price_cache:
                 price, timestamp = self.price_cache[symbol]
-                if time.time() - timestamp < 300:  # 5 minutes cache
+                if time.time() - timestamp < 300:
                     return price
-            ticker = self.safe_binance_request(self.client.get_symbol_ticker, symbol=symbol)
-            if not ticker:
-                return None
-            price = float(ticker['price'])
-            self.price_cache[symbol] = (price, time.time())
-            return price
+            ticker = self.get_multiple_tickers([symbol])
+            if ticker and len(ticker) > 0:
+                price = float(ticker[0].get('lastPrice', 0))
+                self.price_cache[symbol] = (price, time.time())
+                return price
+            return None
         except Exception as e:
             logger.error(f"خطأ في جلب سعر {symbol}: {e}")
             return None
@@ -239,7 +240,7 @@ class MomentumHunterBot:
             cache_key = (symbol, interval, limit)
             if cache_key in self.historical_data_cache:
                 data, timestamp = self.historical_data_cache[cache_key]
-                if time.time() - timestamp < 300:  # 5 minutes cache
+                if time.time() - timestamp < 300:
                     return data
             klines = self.safe_binance_request(self.client.get_klines, symbol=symbol, interval=interval, limit=limit)
             if not klines:
@@ -291,20 +292,18 @@ class MomentumHunterBot:
             score = 0
             details = {}
 
-            # SMA Crossover
             if latest['sma5'] > latest['sma15'] and prev['sma5'] <= prev['sma15']:
-                score += 50  # Bullish crossover
+                score += 50
                 details['sma_crossover'] = 'bullish'
             elif latest['sma5'] < latest['sma15'] and prev['sma5'] >= prev['sma15']:
                 details['sma_crossover'] = 'bearish'
             else:
                 details['sma_crossover'] = 'no_cross'
 
-            # RSI
             rsi_val = latest['rsi'] if not np.isnan(latest['rsi']) else 50
             details['rsi'] = round(rsi_val, 2)
             if rsi_val < self.TRADING_SETTINGS['rsi_oversold']:
-                score += 50  # Oversold condition
+                score += 50
                 details['rsi_condition'] = 'oversold'
             elif rsi_val > self.TRADING_SETTINGS['rsi_overbought']:
                 details['rsi_condition'] = 'overbought'
@@ -422,7 +421,6 @@ class MomentumHunterBot:
                 pnl_percent = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
                 trade_duration = (datetime.now(damascus_tz) - trade['timestamp']).total_seconds() / 3600
 
-                # Exit Conditions
                 df = self.get_historical_data(symbol, self.TRADING_SETTINGS['data_interval'], 20)
                 if df is not None and len(df) >= self.TRADING_SETTINGS['sma_long']:
                     indicators = self.calculate_technical_indicators(df)
@@ -430,17 +428,14 @@ class MomentumHunterBot:
                         latest = indicators.iloc[-1]
                         prev = indicators.iloc[-2]
 
-                        # SMA Crossover Exit
                         if latest['sma5'] < latest['sma15'] and prev['sma5'] >= prev['sma15']:
                             self.close_trade(symbol, current_price, 'sma_bearish_cross')
                             continue
 
-                        # RSI Overbought Exit
                         if latest['rsi'] > self.TRADING_SETTINGS['rsi_overbought']:
                             self.close_trade(symbol, current_price, 'overbought')
                             continue
 
-                # Take Profit or Stop Loss
                 if current_price >= trade['take_profit']:
                     self.close_trade(symbol, current_price, 'take_profit')
                     continue
@@ -448,7 +443,6 @@ class MomentumHunterBot:
                     self.close_trade(symbol, current_price, 'stop_loss')
                     continue
 
-                # Timeout
                 if trade_duration > self.TRADING_SETTINGS['trade_timeout_hours']:
                     self.close_trade(symbol, current_price, 'timeout')
                     continue
@@ -526,21 +520,24 @@ class MomentumHunterBot:
 
     async def find_best_opportunities(self):
         opportunities = []
-        for symbol in self.TRADING_SETTINGS['symbols']:
-            try:
-                ticker = self.get_multiple_tickers([symbol])[0]
-                if not ticker or float(ticker['volume']) * float(ticker['lastPrice']) < 1000000:
-                    continue
-                score, details = self.calculate_momentum_score(symbol)
-                if score >= 80 and details['sma_crossover'] == 'bullish' and details['rsi_condition'] == 'oversold':
-                    opportunities.append({
-                        'symbol': symbol,
-                        'score': score,
-                        'details': details,
-                        'timestamp': datetime.now(damascus_tz)
-                    })
-            except Exception as e:
-                logger.error(f"خطأ أثناء تحليل {symbol}: {e}")
+        symbols = self.TRADING_SETTINGS['symbols']
+        tickers = self.get_multiple_tickers(symbols)
+        if not tickers:
+            logger.warning("⚠️ لا تيكرز متاحة من API Binance")
+            return opportunities
+
+        for ticker in tickers:
+            symbol = ticker.get('symbol')
+            if not symbol or float(ticker.get('volume', 0)) * float(ticker.get('lastPrice', 0)) < 1000000:
+                continue
+            score, details = self.calculate_momentum_score(symbol)
+            if score >= 80 and details['sma_crossover'] == 'bullish' and details['rsi_condition'] == 'oversold':
+                opportunities.append({
+                    'symbol': symbol,
+                    'score': score,
+                    'details': details,
+                    'timestamp': datetime.now(damascus_tz)
+                })
         return sorted(opportunities, key=lambda x: x['score'], reverse=True)
 
     def run_trading_cycle(self):
@@ -548,7 +545,9 @@ class MomentumHunterBot:
             logger.info("🔄 بدء دورة التداول")
             self.manage_active_trades()
             if len(self.active_trades) < self.TRADING_SETTINGS['max_active_trades']:
-                opportunities = asyncio.run(self.find_best_opportunities())
+                loop = self.loop
+                asyncio.set_event_loop(loop)
+                opportunities = loop.run_until_complete(self.find_best_opportunities())
                 if opportunities:
                     logger.info(f"🔍 تم العثور على {len(opportunities)} فرصة")
                     for opportunity in opportunities[:2]:
@@ -627,7 +626,7 @@ class MomentumHunterBot:
 
 def main():
     try:
-        bot = MomentumHunterBot(dry_run=True)  # ضع False للتداول الحقيقي
+        bot = MomentumHunterBot(dry_run=True)
         bot.run_bot()
     except Exception as e:
         logger.error(f"❌ خطأ فادح في البوت: {e}")
