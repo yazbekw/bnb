@@ -328,10 +328,11 @@ class MomentumHunterBot:
             logger.error(f"خطأ في حساب المؤشرات: {e}")
             return df
 
+    
     def calculate_momentum_score(self, symbol):
         try:
             df = self.get_historical_data(symbol, self.TRADING_SETTINGS['data_interval'], limit=50)
-            if df is None or len(df) < 15:
+                if df is None or len(df) < 15:
                 return 0, {}
 
             indicators = self.calculate_technical_indicators(df)
@@ -369,10 +370,13 @@ class MomentumHunterBot:
                 score += self.WEIGHTS['price_change']
 
             # Volume Spike
-            vol_ratio = latest['volume'] / data['volume'].rolling(window=20).mean().iloc[-1] if len(data) >= 20 else 1.0
-            details['volume_ratio'] = round(vol_ratio, 2)
-            if vol_ratio >= self.TRADING_SETTINGS['min_volume_ratio']:
-                score += self.WEIGHTS['volume']
+            if len(indicators) >= 20:  # Ensure enough data for rolling mean
+                vol_ratio = latest['volume'] / indicators['volume'].rolling(window=20).mean().iloc[-1]
+                details['volume_ratio'] = round(vol_ratio, 2)
+                if vol_ratio >= self.TRADING_SETTINGS['min_volume_ratio']:
+                    score += self.WEIGHTS['volume']
+            else:
+                details['volume_ratio'] = 1.0
 
             details['current_price'] = latest['close']
             return min(int(score), 100), details
