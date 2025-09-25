@@ -35,7 +35,9 @@ def health_check():
 def active_trades():
     try:
         bot = FuturesTradingBot.get_instance()
-        return jsonify(list(bot.active_trades.values()))
+        if bot:
+            return jsonify(list(bot.active_trades.values()))
+        return jsonify([])
     except Exception as e:
         return {'error': str(e)}
 
@@ -150,7 +152,7 @@ class TelegramNotifier:
                 logger.info(f"✅ تم إرسال إشعار Telegram: {message_type}")
                 return True
             else:
-                logger.error(f"❌ فشل إرسال Telegram: {response.text}")
+                logger.error(f"❌ فشل إرسال Telegram: {response.status_code} - {response.text}")
                 return False
                 
         except Exception as e:
@@ -179,8 +181,6 @@ class FuturesTradingBot:
 
     @classmethod
     def get_instance(cls):
-        if cls._instance is None:
-            cls._instance = cls()
         return cls._instance
 
     def __init__(self):
@@ -195,21 +195,27 @@ class FuturesTradingBot:
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
 
-        # استخدام Futures API مع إعدادات آمنة
-        self.client = Client(
-            self.api_key, 
-            self.api_secret,
-            {
-                'timeout': 10,
-                'verify': True,
-                'testnet': False  # تأكد أنك تستخدم الشبكة الرئيسية
-            }
-        )
-        
-        # اختبار الاتصال بالمفاتيح
-        self.test_api_connection()
+        # استخدام Futures API بإعدادات بسيطة
+        try:
+            self.client = Client(self.api_key, self.api_secret)
+            # اختبار الاتصال
+            self.test_api_connection()
+        except Exception as e:
+            logger.error(f"❌ فشل تهيئة العميل: {e}")
+            raise
 
-        self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id) if self.telegram_token and self.telegram_chat_id else None
+        # تهيئة المنبه (حتى لو فشل نعطي رسالة)
+        self.notifier = None
+        if self.telegram_token and self.telegram_chat_id:
+            try:
+                self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id)
+                # اختبار إرسال رسالة
+                self.notifier.send_message("🔧 <b>تهيئة البوت</b>\nجاري بدء التشغيل...", 'init')
+            except Exception as e:
+                logger.error(f"❌ فشل تهيئة Telegram: {e}")
+                self.notifier = None
+        else:
+            logger.warning("⚠️ مفاتيح Telegram غير موجودة - تعطيل الإشعارات")
         
         # أفضل 6 عملات للتداول
         self.symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"]
@@ -217,37 +223,47 @@ class FuturesTradingBot:
         
         # تهيئة مدير الأسعار (بدون WebSocket)
         self.price_manager = PriceManager(self.symbols, self.client)
-        self.start_price_updater()
-
+        
         # تحميل الصفقات المفتوحة
         self.load_existing_trades()
+        
+        # بدء تحديث الأسعار
+        self.start_price_updater()
         
         # إرسال رسالة بدء التشغيل
         self.send_startup_message()
         
         FuturesTradingBot._instance = self
+        logger.info("✅ تم تهيئة البوت بنجاح")
 
     def test_api_connection(self):
         """اختبار اتصال API"""
         try:
             # اختبار بسيط لجلب الوقت
             server_time = self.client.futures_time()
-            logger.info("✅ اتصال Binance API نشط")
+            logger.info(f"✅ اتصال Binance API نشط - وقت الخادم: {server_time}")
             return True
         except Exception as e:
             logger.error(f"❌ فشل الاتصال بـ Binance API: {e}")
-            raise Exception(f"فشل الاتصال بـ Binance API: {e}")
+            # تحليل الخطأ
+            if "Invalid API-key" in str(e):
+                logger.error("❌ مفتاح API غير صحيح")
+            elif "Signature" in str(e):
+                logger.error("❌ سر API غير صحيح")
+            elif "permissions" in str(e):
+                logger.error("❌ عدم وجود صلاحيات كافية")
+            raise
 
     def send_startup_message(self):
         """إرسال رسالة بدء التشغيل"""
         if self.notifier:
             try:
                 self.notifier.send_message(
-                    f"🚀 <b>بدء تشغيل بوت العقود الآجلة (بدون WebSocket)</b>\n"
+                    f"🚀 <b>بدء تشغيل بوت العقود الآجلة</b>\n"
                     f"📊 العملات: {', '.join(self.symbols)}\n"
                     f"💼 الرافعة: {self.TRADING_SETTINGS['leverage']}x\n"
                     f"⏰ الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"✅ الاتصال: نشط",
+                    f"✅ الصفقات النشطة: {len(self.active_trades)}",
                     'startup'
                 )
             except Exception as e:
@@ -282,26 +298,29 @@ class FuturesTradingBot:
                 symbol = position['symbol']
                 if symbol in self.symbols:
                     quantity = float(position['positionAmt'])
-                    if quantity > 0:  # صفقات شراء فقط
+                    if quantity != 0:  # أي صفقة نشطة
                         entry_price = float(position['entryPrice'])
                         leverage = float(position['leverage'])
+                        side = "LONG" if quantity > 0 else "SHORT"
                         
                         trade_data = {
                             'symbol': symbol,
                             'quantity': abs(quantity),
                             'entry_price': entry_price,
                             'leverage': leverage,
+                            'side': side,
                             'timestamp': datetime.now(damascus_tz),
                             'status': 'open'
                         }
                         
                         self.active_trades[symbol] = trade_data
-                        logger.info(f"✅ تم تحميل الصفقة: {symbol} - كمية: {quantity}")
+                        logger.info(f"✅ تم تحميل الصفقة: {symbol} - {side} - كمية: {abs(quantity)}")
                         
                         if self.notifier:
                             self.notifier.send_message(
                                 f"📥 <b>صفقة مفتوحة محملة</b>\n"
                                 f"العملة: {symbol}\n"
+                                f"الاتجاه: {side}\n"
                                 f"الكمية: {abs(quantity):.6f}\n"
                                 f"سعر الدخول: ${entry_price:.4f}\n"
                                 f"الرافعة: {leverage}x",
@@ -538,6 +557,7 @@ class FuturesTradingBot:
                     'quantity': quantity,
                     'entry_price': avg_price,
                     'leverage': self.TRADING_SETTINGS['leverage'],
+                    'side': 'LONG',
                     'timestamp': datetime.now(damascus_tz),
                     'status': 'open',
                     'order_id': order['orderId']
@@ -600,14 +620,15 @@ class FuturesTradingBot:
                     continue
 
                 # تحديث حالة الصفقة كل 5 دقائق
-                if self.notifier and int(time.time()) % 300 == 0:  # كل 5 دقائق
+                current_minute = datetime.now().minute
+                if self.notifier and current_minute % 5 == 0:
                     self.notifier.send_message(
                         f"📊 <b>تتبع الصفقة</b>\n"
                         f"العملة: {symbol}\n"
                         f"السعر الحالي: ${current_price:.4f}\n"
                         f"الربح/الخسارة: {pnl_percent:+.2f}%\n"
                         f"المدة: {trade_duration:.1f} ساعة",
-                        f'track_{symbol}'
+                        f'track_{symbol}_{current_minute}'
                     )
 
             except Exception as e:
@@ -619,13 +640,15 @@ class FuturesTradingBot:
             trade = self.active_trades[symbol]
             quantity = trade['quantity']
 
+            # تحديد اتجاه الإغلاق
+            side = Client.SIDE_SELL if trade['side'] == 'LONG' else Client.SIDE_BUY
+
             # إغلاق الصفقة
             order = self.client.futures_create_order(
                 symbol=symbol,
-                side=Client.SIDE_SELL,
+                side=side,
                 type=Client.ORDER_TYPE_MARKET,
-                quantity=quantity,
-                reduceOnly=True  # للإغلاق فقط
+                quantity=quantity
             )
 
             if order['status'] == 'FILLED':
@@ -708,6 +731,8 @@ class FuturesTradingBot:
         self.scan_opportunities()
         self.price_manager.update_prices()
         
+        logger.info("✅ البوت يعمل الآن - في انتظار الإشارات...")
+        
         # الحلقة الرئيسية
         while True:
             try:
@@ -731,7 +756,8 @@ def main():
         logger.error(f"❌ خطأ فادح: {e}")
         # محاولة إرسال إشعار خطأ إذا كان البوت يعمل
         try:
-            if 'bot' in locals() and bot.notifier:
+            bot = FuturesTradingBot.get_instance()
+            if bot and bot.notifier:
                 bot.notifier.send_message(f"❌ <b>إيقاف البوت</b>\nخطأ فادح: {e}", 'fatal_error')
         except:
             pass
@@ -746,4 +772,5 @@ if __name__ == "__main__":
         print("⏳ تأكد من وجود ملف .env بالمفاتيح المطلوبة")
         exit(1)
     
+    print("🚀 بدء تشغيل بوت العقود الآجلة...")
     main()
