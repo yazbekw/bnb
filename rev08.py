@@ -160,8 +160,8 @@ class TelegramNotifier:
 
 class FuturesTradingBot:
     TRADING_SETTINGS = {
-        'min_trade_size': 10,  # 10 دولار
-        'max_trade_size': 49,
+        'base_trade_size': 10,  # الحجم الأساسي للصفقة (10 دولار)
+        'max_trade_size': 50,
         'leverage': 10,  # رافعة 10x
         'margin_type': 'ISOLATED',
         'base_risk_pct': 0.002,
@@ -174,6 +174,16 @@ class FuturesTradingBot:
         'stop_loss_pct': 1.0,  # وقف خسارة 1%
         'take_profit_pct': 2.0,  # أخذ ربح 2%
         'trade_timeout_hours': 2,
+        'signal_strength_thresholds': {
+            'weak': (60, 70),      # قوة إشارة ضعيفة - حجم أساسي
+            'medium': (70, 85),    # قوة إشارة متوسطة - حجم مضاعف
+            'strong': (85, 100)    # قوة إشارة قوية - أقصى حجم
+        },
+        'size_multipliers': {
+            'weak': 1.0,     # مضاعف 1x للحجم الأساسي
+            'medium': 1.5,   # مضاعف 1.5x
+            'strong': 2.0    # مضاعف 2.0x
+        }
     }
 
     def __init__(self):
@@ -203,12 +213,43 @@ class FuturesTradingBot:
         # إرسال رسالة بدء التشغيل
         if self.notifier:
             self.notifier.send_message(
-                f"🚀 <b>بدء تشغيل بوت العقود الآجلة</b>\n"
+                f"🚀 <b>بدء تشغيل بوت العقود الآجلة - النسخة المحدثة</b>\n"
                 f"📊 العملات: {', '.join(self.symbols)}\n"
                 f"💼 الرافعة: {self.TRADING_SETTINGS['leverage']}x\n"
+                f"💰 حجم الأساسي: ${self.TRADING_SETTINGS['base_trade_size']}\n"
+                f"⚖️ مضاعفات الحجم: ضعيف 1x, متوسط 1.5x, قوي 2.0x\n"
                 f"⏰ الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}",
                 'startup'
             )
+
+    def calculate_trade_size(self, signal_strength):
+        """حساب حجم الصفقة بناءً على قوة الإشارة"""
+        try:
+            base_size = self.TRADING_SETTINGS['base_trade_size']
+            thresholds = self.TRADING_SETTINGS['signal_strength_thresholds']
+            multipliers = self.TRADING_SETTINGS['size_multipliers']
+            
+            if thresholds['weak'][0] <= signal_strength < thresholds['weak'][1]:
+                multiplier = multipliers['weak']
+                strength_level = "ضعيفة"
+            elif thresholds['medium'][0] <= signal_strength < thresholds['medium'][1]:
+                multiplier = multipliers['medium']
+                strength_level = "متوسطة"
+            elif thresholds['strong'][0] <= signal_strength <= thresholds['strong'][1]:
+                multiplier = multipliers['strong']
+                strength_level = "قوية"
+            else:
+                multiplier = multipliers['weak']
+                strength_level = "ضعيفة"
+            
+            trade_size = base_size * multiplier
+            trade_size = min(trade_size, self.TRADING_SETTINGS['max_trade_size'])
+            
+            return trade_size, strength_level, multiplier
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في حساب حجم الصفقة: {e}")
+            return base_size, "افتراضي", 1.0
 
     def start_websocket(self):
         """بدء WebSocket"""
@@ -430,18 +471,16 @@ class FuturesTradingBot:
             logger.error(f"❌ خطأ في جلب الدقة: {e}")
             return {'step_size': 0.001, 'precision': 3}
 
-    def execute_trade(self, symbol):
-        """تنفيذ صفقة جديدة"""
+    def execute_trade(self, symbol, signal_strength):
+        """تنفيذ صفقة جديدة مع حجم متغير بناءً على قوة الإشارة"""
         try:
             if len(self.active_trades) >= self.TRADING_SETTINGS['max_active_trades']:
                 logger.info(f"⏸️ الحد الأقصى للصفقات ({self.TRADING_SETTINGS['max_active_trades']})")
                 return False
 
-            # التحليل الفني
-            should_trade, analysis = self.analyze_symbol(symbol)
-            if not should_trade:
-                return False
-
+            # حساب حجم الصفقة بناءً على قوة الإشارة
+            trade_size_usd, strength_level, multiplier = self.calculate_trade_size(signal_strength)
+            
             current_price = self.get_current_price(symbol)
             if current_price is None:
                 return False
@@ -451,7 +490,6 @@ class FuturesTradingBot:
             self.set_margin_type(symbol, self.TRADING_SETTINGS['margin_type'])
 
             # حساب الكمية
-            trade_size_usd = self.TRADING_SETTINGS['min_trade_size']
             quantity = trade_size_usd / current_price
             
             # تقريب الكمية
@@ -481,12 +519,16 @@ class FuturesTradingBot:
                     'leverage': self.TRADING_SETTINGS['leverage'],
                     'timestamp': datetime.now(damascus_tz),
                     'status': 'open',
-                    'order_id': order['orderId']
+                    'order_id': order['orderId'],
+                    'signal_strength': signal_strength,
+                    'trade_size_usd': trade_size_usd,
+                    'size_multiplier': multiplier,
+                    'strength_level': strength_level
                 }
                 
                 self.active_trades[symbol] = trade_data
 
-                # إرسال إشعار النجاح
+                # إرسال إشعار مفصل
                 if self.notifier:
                     self.notifier.send_message(
                         f"🚀 <b>فتح صفقة جديدة</b>\n"
@@ -495,11 +537,13 @@ class FuturesTradingBot:
                         f"الكمية: {quantity:.6f}\n"
                         f"الحجم: ${trade_size_usd:.2f}\n"
                         f"الرافعة: {self.TRADING_SETTINGS['leverage']}x\n"
-                        f"القوة: {analysis['signal_strength']}%",
+                        f"📊 <b>قوة الإشارة: {signal_strength}%</b>\n"
+                        f"📈 المستوى: {strength_level}\n"
+                        f"⚖️ المضاعف: {multiplier}x",
                         f'trade_open_{symbol}'
                     )
 
-                logger.info(f"✅ فتح صفقة {symbol} بسعر {avg_price}")
+                logger.info(f"✅ فتح صفقة {symbol} بحجم ${trade_size_usd:.2f} (مضاعف: {multiplier}x)")
                 return True
 
             return False
@@ -542,12 +586,18 @@ class FuturesTradingBot:
 
                 # تحديث حالة الصفقة كل دقيقة
                 if self.notifier and trade_duration % 1 < 0.016:  # كل دقيقة تقريباً
+                    # إضافة معلومات قوة الإشارة إذا كانت متوفرة
+                    strength_info = ""
+                    if 'signal_strength' in trade:
+                        strength_info = f"\nقوة الإشارة: {trade['signal_strength']}% | المضاعف: {trade.get('size_multiplier', 1.0)}x"
+                    
                     self.notifier.send_message(
                         f"📊 <b>تتبع الصفقة</b>\n"
                         f"العملة: {symbol}\n"
                         f"السعر الحالي: ${current_price:.4f}\n"
                         f"الربح/الخسارة: {pnl_percent:+.2f}%\n"
-                        f"المدة: {trade_duration:.1f} ساعة",
+                        f"المدة: {trade_duration:.1f} ساعة"
+                        f"{strength_info}",
                         f'track_{symbol}'
                     )
 
@@ -573,6 +623,11 @@ class FuturesTradingBot:
                 pnl = (exit_price - trade['entry_price']) * quantity
                 pnl_percent = ((exit_price - trade['entry_price']) / trade['entry_price']) * 100
 
+                # إضافة معلومات إضافية للإشعار
+                extra_info = ""
+                if 'signal_strength' in trade:
+                    extra_info = f"\nقوة الإشارة: {trade['signal_strength']}% | المضاعف: {trade.get('size_multiplier', 1.0)}x"
+
                 # إرسال إشعار الإغلاق
                 if self.notifier:
                     emoji = "✅" if pnl > 0 else "❌"
@@ -582,7 +637,8 @@ class FuturesTradingBot:
                         f"السبب: {reason}\n"
                         f"سعر الخروج: ${exit_price:.4f}\n"
                         f"الربح/الخسارة: ${pnl:.2f} ({pnl_percent:+.2f}%)\n"
-                        f"المدة: {(datetime.now(damascus_tz) - trade['timestamp']).total_seconds()/60:.1f} دقيقة",
+                        f"المدة: {(datetime.now(damascus_tz) - trade['timestamp']).total_seconds()/60:.1f} دقيقة"
+                        f"{extra_info}",
                         f'trade_close_{symbol}'
                     )
 
@@ -604,7 +660,7 @@ class FuturesTradingBot:
             return False
 
     def scan_opportunities(self):
-        """مسح الفرص المتاحة"""
+        """مسح الفرص المتاحة مع تمرير قوة الإشارة"""
         try:
             logger.info("🔍 مسح الفرص المتاحة...")
             
@@ -623,13 +679,13 @@ class FuturesTradingBot:
                                 f"EMA8: ${analysis['ema8']:.4f}\n"
                                 f"EMA21: ${analysis['ema21']:.4f}\n"
                                 f"RSI: {analysis['rsi']:.1f}\n"
-                                f"القوة: {analysis['signal_strength']}%",
+                                f"📊 <b>القوة: {analysis['signal_strength']}%</b>",
                                 f'signal_{symbol}'
                             )
                         
-                        # تنفيذ الصفقة بعد تحليل جميع العوامل
+                        # تمرير قوة الإشارة لدالة التنفيذ
                         time.sleep(1)
-                        self.execute_trade(symbol)
+                        self.execute_trade(symbol, analysis['signal_strength'])
                         break  # تنفيذ صفقة واحدة فقط في كل دورة
 
         except Exception as e:
@@ -637,7 +693,7 @@ class FuturesTradingBot:
 
     def run_bot(self):
         """تشغيل البوت الرئيسي"""
-        logger.info("🚀 بدء تشغيل بوت العقود الآجلة")
+        logger.info("🚀 بدء تشغيل بوت العقود الآجلة - النسخة المحدثة")
         
         # جدولة المهام
         schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.scan_opportunities)
