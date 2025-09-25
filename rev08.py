@@ -2,8 +2,8 @@ import os
 import pandas as pd
 import numpy as np
 from binance.client import Client
-from binance import ThreadedWebsocketManager
-from binance.enums import *
+import websocket
+import json
 import time
 from datetime import datetime, timedelta
 import requests
@@ -14,8 +14,6 @@ from dotenv import load_dotenv
 import threading
 import schedule
 from flask import Flask, jsonify
-import aiohttp
-import asyncio
 import pytz
 
 # ضبط توقيت الخادم إلى توقيت دمشق
@@ -59,47 +57,74 @@ logger = logging.getLogger(__name__)
 
 class BinanceWebSocket:
     def __init__(self, symbols):
-        self.twm = ThreadedWebsocketManager()
         self.symbols = symbols
         self.prices = {}
         self.connected = False
         self.last_update = {}
+        self.ws = None
+        self.thread = None
         
     def start(self):
-        """بدء اتصال WebSocket"""
+        """بدء اتصال WebSocket باستخدام websocket-client"""
         try:
-            self.twm.start()
-            self.connected = True
+            # إنشاء سلسلة الرموز لـ WebSocket
+            streams = [f"{symbol.lower()}@ticker" for symbol in self.symbols]
+            stream_url = f"wss://fstream.binance.com/stream?streams={'/'.join(streams)}"
             
-            # الاشتراك في أسعار جميع الرموز
-            for symbol in self.symbols:
-                self.twm.start_symbol_ticker_socket(
-                    symbol=symbol,
-                    callback=self.handle_price_update
-                )
+            self.ws = websocket.WebSocketApp(
+                stream_url,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close,
+                on_open=self.on_open
+            )
             
-            logger.info(f"✅ بدء WebSocket لـ {len(self.symbols)} رمز")
+            # تشغيل WebSocket في thread منفصل
+            self.thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+            self.thread.start()
+            
+            # الانتظار للتأكد من الاتصال
             time.sleep(3)
+            logger.info(f"✅ بدء WebSocket لـ {len(self.symbols)} رمز")
             
         except Exception as e:
             logger.error(f"❌ فشل بدء WebSocket: {e}")
             self.connected = False
 
-    def handle_price_update(self, msg):
-        """معالجة تحديثات الأسعار"""
+    def on_message(self, ws, message):
+        """معالجة الرسائل الواردة"""
         try:
-            symbol = msg['s']
-            price = float(msg['c'])
-            self.prices[symbol] = {
-                'price': price,
-                'timestamp': datetime.now(damascus_tz),
-                'volume': float(msg['v']),
-                'price_change': float(msg['p']),
-                'price_change_percent': float(msg['P'])
-            }
-            self.last_update[symbol] = time.time()
+            data = json.loads(message)
+            if 'data' in data:
+                symbol = data['data']['s']
+                price = float(data['data']['c'])
+                
+                self.prices[symbol] = {
+                    'price': price,
+                    'timestamp': datetime.now(damascus_tz),
+                    'volume': float(data['data']['v']),
+                    'price_change': float(data['data']['p']),
+                    'price_change_percent': float(data['data']['P'])
+                }
+                self.last_update[symbol] = time.time()
+                
         except Exception as e:
-            logger.error(f"خطأ في تحديث السعر: {e}")
+            logger.error(f"خطأ في معالجة رسالة WebSocket: {e}")
+
+    def on_error(self, ws, error):
+        """معالجة الأخطاء"""
+        logger.error(f"❌ خطأ WebSocket: {error}")
+        self.connected = False
+
+    def on_close(self, ws, close_status_code, close_msg):
+        """معالجة إغلاق الاتصال"""
+        logger.warning("🔌 WebSocket مغلق")
+        self.connected = False
+
+    def on_open(self, ws):
+        """معالجة فتح الاتصال"""
+        logger.info("🔌 WebSocket متصل")
+        self.connected = True
 
     def get_price(self, symbol):
         """جلب السعر من الذاكرة"""
@@ -114,12 +139,12 @@ class BinanceWebSocket:
 
     def is_connected(self):
         """التحقق من حالة الاتصال"""
-        return self.connected and self.prices
+        return self.connected and len(self.prices) > 0
 
     def stop(self):
         """إيقاف WebSocket"""
-        if self.connected:
-            self.twm.stop()
+        if self.ws:
+            self.ws.close()
             self.connected = False
 
 class TelegramNotifier:
@@ -160,9 +185,9 @@ class TelegramNotifier:
 
 class FuturesTradingBot:
     TRADING_SETTINGS = {
-        'base_trade_size': 10,  # الحجم الأساسي للصفقة (10 دولار)
+        'base_trade_size': 10,
         'max_trade_size': 50,
-        'leverage': 10,  # رافعة 10x
+        'leverage': 10,
         'margin_type': 'ISOLATED',
         'base_risk_pct': 0.002,
         'risk_reward_ratio': 2.0,
@@ -171,18 +196,18 @@ class FuturesTradingBot:
         'rsi_oversold': 35,
         'data_interval': '15m',
         'rescan_interval_minutes': 5,
-        'stop_loss_pct': 1.0,  # وقف خسارة 1%
-        'take_profit_pct': 2.0,  # أخذ ربح 2%
+        'stop_loss_pct': 1.0,
+        'take_profit_pct': 2.0,
         'trade_timeout_hours': 2,
         'signal_strength_thresholds': {
-            'weak': (60, 70),      # قوة إشارة ضعيفة - حجم أساسي
-            'medium': (70, 85),    # قوة إشارة متوسطة - حجم مضاعف
-            'strong': (85, 100)    # قوة إشارة قوية - أقصى حجم
+            'weak': (60, 70),
+            'medium': (70, 85),
+            'strong': (85, 100)
         },
         'size_multipliers': {
-            'weak': 1.0,     # مضاعف 1x للحجم الأساسي
-            'medium': 1.5,   # مضاعف 1.5x
-            'strong': 2.0    # مضاعف 2.0x
+            'weak': 1.0,
+            'medium': 1.5,
+            'strong': 2.0
         }
     }
 
@@ -195,32 +220,32 @@ class FuturesTradingBot:
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
 
-        # استخدام Futures API
         self.client = Client(self.api_key, self.api_secret)
         self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id) if self.telegram_token and self.telegram_chat_id else None
         
-        # أفضل 6 عملات للتداول (تم إضافة BNB)
         self.symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"]
         self.active_trades = {}
         
-        # تهيئة WebSocket
+        # استخدام WebSocket البديل
         self.ws_manager = BinanceWebSocket(self.symbols)
         self.start_websocket()
 
-        # تحميل الصفقات المفتوحة
         self.load_existing_trades()
         
-        # إرسال رسالة بدء التشغيل
         if self.notifier:
             self.notifier.send_message(
-                f"🚀 <b>بدء تشغيل بوت العقود الآجلة - النسخة المحدثة</b>\n"
+                f"🚀 <b>بدء تشغيل بوت العقود الآجلة - الإصدار المستقر</b>\n"
                 f"📊 العملات: {', '.join(self.symbols)}\n"
                 f"💼 الرافعة: {self.TRADING_SETTINGS['leverage']}x\n"
                 f"💰 حجم الأساسي: ${self.TRADING_SETTINGS['base_trade_size']}\n"
-                f"⚖️ مضاعفات الحجم: ضعيف 1x, متوسط 1.5x, قوي 2.0x\n"
                 f"⏰ الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}",
                 'startup'
             )
+
+    # باقي الكود يبقى كما هو بدون تغيير...
+    # [يتبع نفس الكود السابق مع تعديل بسيط في start_websocket]
+    
+    
 
     def calculate_trade_size(self, signal_strength):
         """حساب حجم الصفقة بناءً على قوة الإشارة"""
@@ -251,8 +276,256 @@ class FuturesTradingBot:
             logger.error(f"❌ خطأ في حساب حجم الصفقة: {e}")
             return base_size, "افتراضي", 1.0
 
+    n
+import os
+import pandas as pd
+import numpy as np
+from binance.client import Client
+import websocket
+import json
+import time
+from datetime import datetime, timedelta
+import requests
+import logging
+import warnings
+warnings.filterwarnings('ignore')
+from dotenv import load_dotenv
+import threading
+import schedule
+from flask import Flask, jsonify
+import pytz
+
+# ضبط توقيت الخادم إلى توقيت دمشق
+damascus_tz = pytz.timezone('Asia/Damascus')
+os.environ['TZ'] = 'Asia/Damascus'
+if hasattr(time, 'tzset'):
+    time.tzset()
+
+# تحميل متغيرات البيئة
+load_dotenv()
+
+# إنشاء تطبيق Flask للرصد الصحي
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return {'status': 'healthy', 'service': 'futures-trading-bot', 'timestamp': datetime.now(damascus_tz).isoformat()}
+
+@app.route('/active_trades')
+def active_trades():
+    try:
+        bot = FuturesTradingBot()
+        return jsonify(list(bot.active_trades.values()))
+    except Exception as e:
+        return {'error': str(e)}
+
+def run_flask_app():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+# إعداد logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('futures_bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class BinanceWebSocket:
+    def __init__(self, symbols):
+        self.symbols = symbols
+        self.prices = {}
+        self.connected = False
+        self.last_update = {}
+        self.ws = None
+        self.thread = None
+        
+    def start(self):
+        """بدء اتصال WebSocket باستخدام websocket-client"""
+        try:
+            # إنشاء سلسلة الرموز لـ WebSocket
+            streams = [f"{symbol.lower()}@ticker" for symbol in self.symbols]
+            stream_url = f"wss://fstream.binance.com/stream?streams={'/'.join(streams)}"
+            
+            self.ws = websocket.WebSocketApp(
+                stream_url,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close,
+                on_open=self.on_open
+            )
+            
+            # تشغيل WebSocket في thread منفصل
+            self.thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+            self.thread.start()
+            
+            # الانتظار للتأكد من الاتصال
+            time.sleep(3)
+            logger.info(f"✅ بدء WebSocket لـ {len(self.symbols)} رمز")
+            
+        except Exception as e:
+            logger.error(f"❌ فشل بدء WebSocket: {e}")
+            self.connected = False
+
+    def on_message(self, ws, message):
+        """معالجة الرسائل الواردة"""
+        try:
+            data = json.loads(message)
+            if 'data' in data:
+                symbol = data['data']['s']
+                price = float(data['data']['c'])
+                
+                self.prices[symbol] = {
+                    'price': price,
+                    'timestamp': datetime.now(damascus_tz),
+                    'volume': float(data['data']['v']),
+                    'price_change': float(data['data']['p']),
+                    'price_change_percent': float(data['data']['P'])
+                }
+                self.last_update[symbol] = time.time()
+                
+        except Exception as e:
+            logger.error(f"خطأ في معالجة رسالة WebSocket: {e}")
+
+    def on_error(self, ws, error):
+        """معالجة الأخطاء"""
+        logger.error(f"❌ خطأ WebSocket: {error}")
+        self.connected = False
+
+    def on_close(self, ws, close_status_code, close_msg):
+        """معالجة إغلاق الاتصال"""
+        logger.warning("🔌 WebSocket مغلق")
+        self.connected = False
+
+    def on_open(self, ws):
+        """معالجة فتح الاتصال"""
+        logger.info("🔌 WebSocket متصل")
+        self.connected = True
+
+    def get_price(self, symbol):
+        """جلب السعر من الذاكرة"""
+        if symbol not in self.prices:
+            return None
+            
+        last_update = self.last_update.get(symbol, 0)
+        if time.time() - last_update > 30:
+            return None
+            
+        return self.prices[symbol]['price']
+
+    def is_connected(self):
+        """التحقق من حالة الاتصال"""
+        return self.connected and len(self.prices) > 0
+
+    def stop(self):
+        """إيقاف WebSocket"""
+        if self.ws:
+            self.ws.close()
+            self.connected = False
+
+class TelegramNotifier:
+    def __init__(self, token, chat_id):
+        self.token = token
+        self.chat_id = chat_id
+        self.base_url = f"https://api.telegram.org/bot{token}"
+        self.last_notification = time.time()
+
+    def send_message(self, message, message_type='info'):
+        """إرسال رسالة إلى Telegram مع منع التكرار"""
+        try:
+            # منع التكرار خلال 10 ثوان
+            current_time = time.time()
+            if current_time - self.last_notification < 10 and message_type != 'trade':
+                return True
+                
+            self.last_notification = current_time
+            
+            url = f"{self.base_url}/sendMessage"
+            payload = {
+                'chat_id': self.chat_id, 
+                'text': message, 
+                'parse_mode': 'HTML'
+            }
+            
+            response = requests.post(url, data=payload, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"✅ تم إرسال إشعار Telegram: {message_type}")
+                return True
+            else:
+                logger.error(f"❌ فشل إرسال Telegram: {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في إرسال Telegram: {e}")
+            return False
+
+class FuturesTradingBot:
+    TRADING_SETTINGS = {
+        'base_trade_size': 10,
+        'max_trade_size': 50,
+        'leverage': 10,
+        'margin_type': 'ISOLATED',
+        'base_risk_pct': 0.002,
+        'risk_reward_ratio': 2.0,
+        'max_active_trades': 3,
+        'rsi_overbought': 75,
+        'rsi_oversold': 35,
+        'data_interval': '15m',
+        'rescan_interval_minutes': 5,
+        'stop_loss_pct': 1.0,
+        'take_profit_pct': 2.0,
+        'trade_timeout_hours': 2,
+        'signal_strength_thresholds': {
+            'weak': (60, 70),
+            'medium': (70, 85),
+            'strong': (85, 100)
+        },
+        'size_multipliers': {
+            'weak': 1.0,
+            'medium': 1.5,
+            'strong': 2.0
+        }
+    }
+
+    def __init__(self):
+        self.api_key = os.environ.get('BINANCE_API_KEY')
+        self.api_secret = os.environ.get('BINANCE_API_SECRET')
+        self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+
+        if not all([self.api_key, self.api_secret]):
+            raise ValueError("مفاتيح Binance مطلوبة")
+
+        self.client = Client(self.api_key, self.api_secret)
+        self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id) if self.telegram_token and self.telegram_chat_id else None
+        
+        self.symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "LINKUSDT"]
+        self.active_trades = {}
+        
+        # استخدام WebSocket البديل
+        self.ws_manager = BinanceWebSocket(self.symbols)
+        self.start_websocket()
+
+        self.load_existing_trades()
+        
+        if self.notifier:
+            self.notifier.send_message(
+                f"🚀 <b>بدء تشغيل بوت العقود الآجلة - الإصدار المستقر</b>\n"
+                f"📊 العملات: {', '.join(self.symbols)}\n"
+                f"💼 الرافعة: {self.TRADING_SETTINGS['leverage']}x\n"
+                f"💰 حجم الأساسي: ${self.TRADING_SETTINGS['base_trade_size']}\n"
+                f"⏰ الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}",
+                'startup'
+            )
+
+    # باقي الكود يبقى كما هو بدون تغيير...
+    # [يتبع نفس الكود السابق مع تعديل بسيط في start_websocket]
+    
     def start_websocket(self):
-        """بدء WebSocket"""
+        """بدء WebSocket المعدل"""
         def ws_thread():
             try:
                 self.ws_manager.start()
@@ -260,11 +533,12 @@ class FuturesTradingBot:
                 if self.ws_manager.is_connected():
                     logger.info("✅ WebSocket متصل بنجاح")
                     if self.notifier:
-                        self.notifier.send_message("📡 <b>WebSocket متصل</b>\nتم بدء الاتصال المباشر مع Binance", 'websocket')
+                        self.notifier.send_message("📡 <b>WebSocket متصل</b>", 'websocket')
             except Exception as e:
                 logger.error(f"❌ فشل بدء WebSocket: {e}")
 
         threading.Thread(target=ws_thread, daemon=True).start()
+
 
     def load_existing_trades(self):
         """تحميل الصفقات المفتوحة من العقود الآجلة"""
