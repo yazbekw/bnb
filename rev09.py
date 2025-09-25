@@ -34,7 +34,7 @@ def health_check():
 @app.route('/active_trades')
 def active_trades():
     try:
-        bot = FuturesTradingBot()
+        bot = FuturesTradingBot.get_instance()
         return jsonify(list(bot.active_trades.values()))
     except Exception as e:
         return {'error': str(e)}
@@ -55,28 +55,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class PriceManager:
-    def __init__(self, symbols):
+    def __init__(self, symbols, client):
         self.symbols = symbols
+        self.client = client
         self.prices = {}
         self.last_update = {}
         
     def update_prices(self):
         """تحديث الأسعار لجميع الرموز باستخدام REST API"""
         try:
+            success_count = 0
             for symbol in self.symbols:
                 try:
-                    ticker = Client().futures_symbol_ticker(symbol=symbol)
+                    ticker = self.client.futures_symbol_ticker(symbol=symbol)
                     if ticker and 'price' in ticker:
                         price = float(ticker['price'])
                         self.prices[symbol] = price
                         self.last_update[symbol] = time.time()
+                        success_count += 1
                         logger.debug(f"✅ تم تحديث سعر {symbol}: ${price}")
                 except Exception as e:
                     logger.warning(f"⚠️ فشل تحديث سعر {symbol}: {e}")
                     continue
                     
-            logger.info(f"✅ تم تحديث أسعار {len([p for p in self.prices if time.time() - self.last_update.get(p, 0) < 30])} رمز")
-            return True
+            logger.info(f"✅ تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
+            return success_count > 0
         except Exception as e:
             logger.error(f"❌ خطأ في تحديث الأسعار: {e}")
             return False
@@ -97,7 +100,7 @@ class PriceManager:
     def update_single_price(self, symbol):
         """تحديث سعر رمز واحد فقط"""
         try:
-            ticker = Client().futures_symbol_ticker(symbol=symbol)
+            ticker = self.client.futures_symbol_ticker(symbol=symbol)
             if ticker and 'price' in ticker:
                 price = float(ticker['price'])
                 self.prices[symbol] = price
@@ -121,16 +124,19 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.last_notification = time.time()
+        self.notification_types = {}
 
     def send_message(self, message, message_type='info'):
         """إرسال رسالة إلى Telegram مع منع التكرار"""
         try:
-            # منع التكرار خلال 10 ثوان
+            # منع التكرار خلال 30 ثانية لنفس النوع
             current_time = time.time()
-            if current_time - self.last_notification < 10 and message_type != 'trade':
+            last_sent = self.notification_types.get(message_type, 0)
+            
+            if current_time - last_sent < 30 and message_type != 'trade':
                 return True
                 
-            self.last_notification = current_time
+            self.notification_types[message_type] = current_time
             
             url = f"{self.base_url}/sendMessage"
             payload = {
@@ -152,6 +158,7 @@ class TelegramNotifier:
             return False
 
 class FuturesTradingBot:
+    _instance = None
     TRADING_SETTINGS = {
         'min_trade_size': 10,  # 10 دولار
         'max_trade_size': 50,
@@ -170,7 +177,16 @@ class FuturesTradingBot:
         'price_update_interval': 1,  # تحديث الأسعار كل دقيقة
     }
 
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
     def __init__(self):
+        if FuturesTradingBot._instance is not None:
+            raise Exception("هذه الفئة تستخدم نمط Singleton")
+            
         self.api_key = os.environ.get('BINANCE_API_KEY')
         self.api_secret = os.environ.get('BINANCE_API_SECRET')
         self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -179,8 +195,20 @@ class FuturesTradingBot:
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
 
-        # استخدام Futures API
-        self.client = Client(self.api_key, self.api_secret)
+        # استخدام Futures API مع إعدادات آمنة
+        self.client = Client(
+            self.api_key, 
+            self.api_secret,
+            {
+                'timeout': 10,
+                'verify': True,
+                'testnet': False  # تأكد أنك تستخدم الشبكة الرئيسية
+            }
+        )
+        
+        # اختبار الاتصال بالمفاتيح
+        self.test_api_connection()
+
         self.notifier = TelegramNotifier(self.telegram_token, self.telegram_chat_id) if self.telegram_token and self.telegram_chat_id else None
         
         # أفضل 6 عملات للتداول
@@ -188,21 +216,42 @@ class FuturesTradingBot:
         self.active_trades = {}
         
         # تهيئة مدير الأسعار (بدون WebSocket)
-        self.price_manager = PriceManager(self.symbols)
+        self.price_manager = PriceManager(self.symbols, self.client)
         self.start_price_updater()
 
         # تحميل الصفقات المفتوحة
         self.load_existing_trades()
         
         # إرسال رسالة بدء التشغيل
+        self.send_startup_message()
+        
+        FuturesTradingBot._instance = self
+
+    def test_api_connection(self):
+        """اختبار اتصال API"""
+        try:
+            # اختبار بسيط لجلب الوقت
+            server_time = self.client.futures_time()
+            logger.info("✅ اتصال Binance API نشط")
+            return True
+        except Exception as e:
+            logger.error(f"❌ فشل الاتصال بـ Binance API: {e}")
+            raise Exception(f"فشل الاتصال بـ Binance API: {e}")
+
+    def send_startup_message(self):
+        """إرسال رسالة بدء التشغيل"""
         if self.notifier:
-            self.notifier.send_message(
-                f"🚀 <b>بدء تشغيل بوت العقود الآجلة (بدون WebSocket)</b>\n"
-                f"📊 العملات: {', '.join(self.symbols)}\n"
-                f"💼 الرافعة: {self.TRADING_SETTINGS['leverage']}x\n"
-                f"⏰ الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}",
-                'startup'
-            )
+            try:
+                self.notifier.send_message(
+                    f"🚀 <b>بدء تشغيل بوت العقود الآجلة (بدون WebSocket)</b>\n"
+                    f"📊 العملات: {', '.join(self.symbols)}\n"
+                    f"💼 الرافعة: {self.TRADING_SETTINGS['leverage']}x\n"
+                    f"⏰ الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"✅ الاتصال: نشط",
+                    'startup'
+                )
+            except Exception as e:
+                logger.error(f"❌ فشل إرسال رسالة البدء: {e}")
 
     def start_price_updater(self):
         """بدء تحديث الأسعار بشكل دوري"""
@@ -210,7 +259,7 @@ class FuturesTradingBot:
             while True:
                 try:
                     self.price_manager.update_prices()
-                    time.sleep(self.TRADING_SETTINGS['price_update_interval'] * 60)  # التحويل إلى دقائق
+                    time.sleep(self.TRADING_SETTINGS['price_update_interval'] * 60)
                 except Exception as e:
                     logger.error(f"❌ خطأ في تحديث الأسعار: {e}")
                     time.sleep(60)
@@ -222,9 +271,12 @@ class FuturesTradingBot:
         """تحميل الصفقات المفتوحة من العقود الآجلة"""
         try:
             # جلب المراكز المفتوحة
-            positions = self.client.futures_account()['positions']
+            account_info = self.client.futures_account()
+            positions = account_info['positions']
             
             open_positions = [p for p in positions if float(p['positionAmt']) != 0]
+            
+            logger.info(f"🔍 العثور على {len(open_positions)} مركز مفتوح")
             
             for position in open_positions:
                 symbol = position['symbol']
@@ -261,6 +313,10 @@ class FuturesTradingBot:
                 
         except Exception as e:
             logger.error(f"❌ خطأ في تحميل الصفقات: {e}")
+            if "Invalid API-key" in str(e):
+                logger.error("❌ مفتاح API غير صالح - تحقق من المفتاح والسر")
+            elif "permissions" in str(e):
+                logger.error("❌ عدم وجود صلاحيات كافية - تأكد من تفعيل Futures Trading")
 
     def get_current_price(self, symbol):
         """جلب السعر الحالي باستخدام REST API"""
@@ -313,6 +369,10 @@ class FuturesTradingBot:
             logger.info(f"✅ ضبط الهامش لـ {symbol} إلى {margin_type}")
             return True
         except Exception as e:
+            # تجاهل الخطأ إذا كان الهامش مضبوطاً مسبقاً
+            if "No need to change margin type" in str(e):
+                logger.info(f"ℹ️ نوع الهامش مضبوط مسبقاً لـ {symbol}")
+                return True
             logger.error(f"❌ خطأ في ضبط الهامش: {e}")
             return False
 
@@ -464,8 +524,8 @@ class FuturesTradingBot:
             # تنفيذ الصفقة
             order = self.client.futures_create_order(
                 symbol=symbol,
-                side='BUY',
-                type='MARKET',
+                side=Client.SIDE_BUY,
+                type=Client.ORDER_TYPE_MARKET,
                 quantity=quantity
             )
 
@@ -540,7 +600,7 @@ class FuturesTradingBot:
                     continue
 
                 # تحديث حالة الصفقة كل 5 دقائق
-                if self.notifier and int(trade_duration * 60) % 5 == 0:
+                if self.notifier and int(time.time()) % 300 == 0:  # كل 5 دقائق
                     self.notifier.send_message(
                         f"📊 <b>تتبع الصفقة</b>\n"
                         f"العملة: {symbol}\n"
@@ -562,9 +622,10 @@ class FuturesTradingBot:
             # إغلاق الصفقة
             order = self.client.futures_create_order(
                 symbol=symbol,
-                side='SELL',
-                type='MARKET',
-                quantity=quantity
+                side=Client.SIDE_SELL,
+                type=Client.ORDER_TYPE_MARKET,
+                quantity=quantity,
+                reduceOnly=True  # للإغلاق فقط
             )
 
             if order['status'] == 'FILLED':
@@ -627,7 +688,7 @@ class FuturesTradingBot:
                             )
                         
                         # تنفيذ الصفقة بعد تحليل جميع العوامل
-                        time.sleep(1)
+                        time.sleep(2)
                         self.execute_trade(symbol)
                         break  # تنفيذ صفقة واحدة فقط في كل دورة
 
@@ -641,7 +702,7 @@ class FuturesTradingBot:
         # جدولة المهام
         schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.scan_opportunities)
         schedule.every(1).minutes.do(self.manage_trades)
-        schedule.every(5).minutes.do(self.price_manager.update_prices)  # تحديث الأسعار كل 5 دقائق
+        schedule.every(5).minutes.do(self.price_manager.update_prices)
         
         # التشغيل الفوري للمسح الأول
         self.scan_opportunities()
@@ -670,8 +731,7 @@ def main():
         logger.error(f"❌ خطأ فادح: {e}")
         # محاولة إرسال إشعار خطأ إذا كان البوت يعمل
         try:
-            bot = FuturesTradingBot()
-            if bot.notifier:
+            if 'bot' in locals() and bot.notifier:
                 bot.notifier.send_message(f"❌ <b>إيقاف البوت</b>\nخطأ فادح: {e}", 'fatal_error')
         except:
             pass
@@ -683,6 +743,7 @@ if __name__ == "__main__":
     
     if missing_vars:
         print(f"❌ متغيرات بيئية مفقودة: {missing_vars}")
+        print("⏳ تأكد من وجود ملف .env بالمفاتيح المطلوبة")
         exit(1)
     
     main()
