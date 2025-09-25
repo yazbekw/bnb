@@ -161,7 +161,7 @@ class TelegramNotifier:
 class FuturesTradingBot:
     TRADING_SETTINGS = {
         'min_trade_size': 10,  # 10 دولار
-        'max_trade_size': 50,
+        'max_trade_size': 49,
         'leverage': 10,  # رافعة 10x
         'margin_type': 'ISOLATED',
         'base_risk_pct': 0.002,
