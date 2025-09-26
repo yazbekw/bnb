@@ -92,7 +92,7 @@ class PriceManager:
         try:
             # إذا كان السعر قديم (أكثر من 30 ثانية)، نقوم بتحديثه
             last_update = self.last_update.get(symbol, 0)
-            if time.time() - last_update > 30:
+            if time.time() - last_update > 120:
                 self.update_single_price(symbol)
                 
             return self.prices.get(symbol)
@@ -175,7 +175,7 @@ class FuturesTradingBot:
         'data_interval': '5m',
         'rescan_interval_minutes': 2,
         'trade_timeout_hours': 0.5,
-        'price_update_interval': 0.5,  # تحديث الأسعار كل 30 ثانية
+        'price_update_interval': 2,  # تحديث الأسعار كل 30 ثانية
         'trail_trigger_pct': 0.5,  # بدء Trailing Stop عند ربح 0.5%
         'trail_offset_pct': 0.5,   # مسافة Trailing Stop 0.5%
     }
@@ -1092,8 +1092,8 @@ class FuturesTradingBot:
         logger.info("🚀 بدء تشغيل بوت العقود الآجلة والفوري")
         
         schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.scan_opportunities)
-        schedule.every(1).minutes.do(self.manage_trades)
-        schedule.every(5).minutes.do(self.price_manager.update_prices)
+        schedule.every(3).minutes.do(self.manage_trades)
+        schedule.every(10).minutes.do(self.price_manager.update_prices)
         
         self.scan_opportunities()
         self.price_manager.update_prices()
