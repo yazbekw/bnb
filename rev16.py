@@ -217,6 +217,8 @@ class FuturesTradingBot:
         'data_interval': '5m',
         'rescan_interval_minutes': 4,
         'trade_timeout_hours': 0.5,
+        'extended_timeout_hours': 0.75,  # تمديد إلى 45 دقيقة
+        'extended_take_profit_multiplier': 0.5,  # خفض حد الربح إلى النصف
         'price_update_interval': 2,
         'trail_trigger_pct': 0.5,
         'trail_offset_pct': 0.5,
@@ -410,6 +412,7 @@ class FuturesTradingBot:
                             'highest_price': entry_price if side == 'LONG' else entry_price,
                             'lowest_price': entry_price if side == 'SHORT' else entry_price,
                             'trail_started': False
+                            'extended': False  # جديد: تتبع التمديد
                         }
                         
                         self.active_trades[symbol] = trade_data
@@ -774,13 +777,16 @@ class FuturesTradingBot:
     def manage_trades(self):
         self.manage_futures_trades()
 
+    
+
+    # في manage_futures_trades، استبدل الجزء الخاص بالـ timeout والـ take_profit:
     def manage_futures_trades(self):
         if not self.active_trades:
             logger.info("🔍 لا توجد صفقات نشطة في العقود")
             return
-        
+    
         logger.info(f"🔍 إدارة {len(self.active_trades)} صفقة عقود نشطة")
-        
+    
         for symbol, trade in list(self.active_trades.items()):
             try:
                 current_price = self.get_current_price(symbol)
@@ -820,7 +826,12 @@ class FuturesTradingBot:
 
                 settings = self.symbol_settings.get(symbol, {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5})
                 stop_loss_pct = settings['stop_loss_pct']
+            
+                # تعديل take_profit_pct إذا كانت الصفقة ممددة وخاسرة
                 take_profit_pct = settings['take_profit_pct']
+                if trade.get('extended', False) and pnl_percent < 0:
+                    take_profit_pct *= self.TRADING_SETTINGS['extended_take_profit_multiplier']  # خفض إلى النصف
+                    logger.info(f"🔄 خفض حد جني الأرباح لـ {symbol} إلى {take_profit_pct:.2f}% بسبب التمديد")
 
                 if trade['side'] == 'LONG':
                     if pnl_percent <= -stop_loss_pct:
@@ -833,8 +844,25 @@ class FuturesTradingBot:
                     elif pnl_percent >= take_profit_pct:
                         self.close_futures_trade(symbol, current_price, 'Take Profit')
 
+                # منطق التمديد للصفقات الخاسرة
                 trade_age = datetime.now(damascus_tz) - trade['timestamp']
-                if trade_age.total_seconds() > self.TRADING_SETTINGS['trade_timeout_hours'] * 3600:
+                timeout_hours = self.TRADING_SETTINGS['extended_timeout_hours'] if trade.get('extended', False) else self.TRADING_SETTINGS['trade_timeout_hours']
+            
+                if pnl_percent < 0 and not trade.get('extended', False) and trade_age.total_seconds() > self.TRADING_SETTINGS['trade_timeout_hours'] * 3600:
+                    # تمديد الوقت وإعادة تعيين timestamp
+                    trade['timestamp'] = datetime.now(damascus_tz) - timedelta(hours=self.TRADING_SETTINGS['trade_timeout_hours'])  # إعادة عد من الصفر + التمديد
+                    trade['extended'] = True
+                    logger.info(f"⏳ تمديد وقت الصفقة الخاسرة {symbol} إلى {self.TRADING_SETTINGS['extended_timeout_hours']} ساعات")
+                    if self.notifier:
+                        self.notifier.send_message(
+                            f"⏳ <b>تمديد صفقة خاسرة</b>\n"
+                            f"العملة: {symbol}\n"
+                            f"P&L الحالي: {pnl_percent:.2f}%\n"
+                            f"الوقت الجديد: {self.TRADING_SETTINGS['extended_timeout_hours']} ساعات\n"
+                            f"حد الربح الجديد: {take_profit_pct:.2f}%",  # تصحيح: عرض القيمة بعد الخفض
+                            f'extend_futures_{symbol}'
+                        )
+                elif trade_age.total_seconds() > timeout_hours * 3600:
                     self.close_futures_trade(symbol, current_price, 'Timeout')
 
                 if (datetime.now(damascus_tz) - trade['last_notification']).total_seconds() > 3600:
@@ -846,7 +874,8 @@ class FuturesTradingBot:
                             f"سعر الدخول: ${trade['entry_price']:.4f}\n"
                             f"السعر الحالي: ${current_price:.4f}\n"
                             f"P&L: {pnl_percent:.2f}%\n"
-                            f"المدة: {trade_age.seconds // 60} دقيقة",
+                            f"المدة: {trade_age.seconds // 60} دقيقة\n"
+                            f"ممدد: {'نعم' if trade.get('extended', False) else 'لا'}",
                             f'update_futures_{symbol}'
                         )
                     trade['last_notification'] = datetime.now(damascus_tz)
