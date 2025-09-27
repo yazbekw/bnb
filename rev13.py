@@ -64,34 +64,25 @@ class PriceManager:
         self.prices = {}
         self.last_update = {}
         
+
     def update_prices(self):
         """تحديث الأسعار لجميع الرموز باستخدام طلب واحد لجميع التيكرز"""
         try:
             success_count = 0
             all_tickers = self.client.futures_ticker()
             logger.info(f"عدد التيكرز المجلوبة: {len(all_tickers) if all_tickers else 0}")
-            
+        
+            # إضافة تصحيح للرموز
+            logger.info(f"الرموز المطلوبة: {self.symbols}")
+        
             if not all_tickers:
                 logger.warning("⚠️ فشل جلب التيكرز، جاري المحاولة الفردية...")
-                # Fallback إلى جلب فردي
-                for symbol in self.symbols:
-                    try:
-                        ticker = self.client.futures_symbol_ticker(symbol=symbol)
-                        price = float(ticker.get('price', 0))
-                        if price > 0:
-                            self.prices[symbol] = price
-                            self.last_update[symbol] = time.time()
-                            success_count += 1
-                            logger.debug(f"✅ Fallback: تم تحديث سعر {symbol}: ${price}")
-                    except Exception as e:
-                        logger.error(f"❌ Fallback فشل لـ {symbol}: {str(e)}")
-                
-                if success_count > 0:
-                    logger.info(f"✅ Fallback: تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
-                    return True
-                logger.error("❌ فشل تحديث الأسعار حتى مع الجلب الفردي")
-                return False
-                
+                return self.fallback_price_update()
+            
+            # تسجيل أول 10 رموز للتdebug
+            sample_symbols = [ticker['symbol'] for ticker in all_tickers[:10]]
+            logger.info(f"عينة من الرموز المستلمة: {sample_symbols}")
+        
             for ticker in all_tickers:
                 symbol = ticker.get('symbol')
                 if symbol in self.symbols:
@@ -101,31 +92,43 @@ class PriceManager:
                         self.last_update[symbol] = time.time()
                         success_count += 1
                         logger.debug(f"✅ تم تحديث سعر {symbol}: ${price}")
+        
+            logger.info(f"✅ تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
+        
+            # إذا لم يتم تحديث أي رمز، جرب Fallback فوراً
+            if success_count == 0:
+                logger.warning("❌ لم يتم العثور على أي رمز في التيكرز، جاري Fallback...")
+                return self.fallback_price_update()
             
-            logger.info(f"✅ تم تحديث أسعار {success_count} من {len(self.symbols)} رمز بطلب واحد")
-            return success_count > 0
+            return True
             
         except Exception as e:
             logger.error(f"❌ خطأ في تحديث الأسعار: {str(e)}")
-            # Fallback إلى جلب فردي في حالة الخطأ
-            success_count = 0
-            for symbol in self.symbols:
-                try:
-                    ticker = self.client.futures_symbol_ticker(symbol=symbol)
-                    price = float(ticker.get('price', 0))
-                    if price > 0:
-                        self.prices[symbol] = price
-                        self.last_update[symbol] = time.time()
-                        success_count += 1
-                        logger.debug(f"✅ Fallback: تم تحديث سعر {symbol}: ${price}")
-                except Exception as e:
-                    logger.error(f"❌ Fallback فشل لـ {symbol}: {str(e)}")
-            
-            if success_count > 0:
-                logger.info(f"✅ Fallback: تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
-                return True
-            logger.error("❌ فشل تحديث الأسعار بعد كل المحاولات")
-            return False
+            return self.fallback_price_update()
+
+    def fallback_price_update(self):
+        """Fallback للجلب الفردي عند الفشل"""
+        success_count = 0
+        for symbol in self.symbols:
+            try:
+                ticker = self.client.futures_symbol_ticker(symbol=symbol)
+                price = float(ticker.get('price', 0))
+                if price > 0:
+                    self.prices[symbol] = price
+                    self.last_update[symbol] = time.time()
+                    success_count += 1
+                    logger.info(f"✅ Fallback: تم تحديث سعر {symbol}: ${price}")
+                else:
+                    logger.warning(f"⚠️ Fallback: سعر غير صالح لـ {symbol}")
+            except Exception as e:
+                logger.error(f"❌ Fallback فشل لـ {symbol}: {str(e)}")
+    
+        if success_count > 0:
+            logger.info(f"✅ Fallback: تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
+            return True
+    
+        logger.error("❌ فشل تحديث الأسعار بعد كل المحاولات")
+        return False
 
     def get_price(self, symbol):
         """جلب السعر الحالي للرمز"""
@@ -254,6 +257,7 @@ class FuturesTradingBot:
             logger.warning("⚠️ مفاتيح Telegram غير موجودة - تعطيل الإشعارات")
         
         self.symbols = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT"]
+        self.verify_symbols_availability()
         
         self.symbol_settings = {
             "ETHUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
@@ -281,6 +285,29 @@ class FuturesTradingBot:
         
         FuturesTradingBot._instance = self
         logger.info("✅ تم تهيئة البوت بنجاح")
+
+    def verify_symbols_availability(self):
+        """التحقق من توفر الرموز في سوق العقود"""
+        try:
+            exchange_info = self.client.futures_exchange_info()
+            available_symbols = [s['symbol'] for s in exchange_info['symbols']]
+        
+            logger.info(f"الرموز المتاحة في العقود: {len(available_symbols)}")
+        
+            for symbol in self.symbols:
+                if symbol in available_symbols:
+                    logger.info(f"✅ {symbol} متوفر في العقود")
+                else:
+                    logger.warning(f"⚠️ {symbol} غير متوفر في العقود")
+                
+            # تصحيح الرموز إذا لزم الأمر
+            valid_symbols = [s for s in self.symbols if s in available_symbols]
+            if len(valid_symbols) != len(self.symbols):
+                logger.warning(f"⚠️ تصحيح الرموز من {self.symbols} إلى {valid_symbols}")
+                self.symbols = valid_symbols
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في التحقق من الرموز: {e}")
 
     def debug_bot_status(self):
         logger.info("=== حالة البوت للتصحيح ===")
