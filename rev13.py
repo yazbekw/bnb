@@ -67,70 +67,97 @@ class PriceManager:
     def update_prices(self):
         """تحديث الأسعار لجميع الرموز باستخدام طلب واحد لجميع التيكرز"""
         try:
-            for attempt in range(3):  # إعادة محاولة 3 مرات في حال فشل الجلب
-                success_count = 0
-                all_tickers = self.client.futures_ticker()
-                logger.info(f"عدد التيكرز المجلوبة: {len(all_tickers)}")
-                if not all_tickers:
-                    logger.warning(f"⚠️ فشل جلب التيكرز في المحاولة {attempt + 1}/3")
-                    time.sleep(2)
-                    continue
-                for ticker in all_tickers:
-                    symbol = ticker.get('symbol')
-                    if symbol in self.symbols:
+            success_count = 0
+            all_tickers = self.client.futures_ticker()
+            logger.info(f"عدد التيكرز المجلوبة: {len(all_tickers) if all_tickers else 0}")
+            
+            if not all_tickers:
+                logger.warning("⚠️ فشل جلب التيكرز، جاري المحاولة الفردية...")
+                # Fallback إلى جلب فردي
+                for symbol in self.symbols:
+                    try:
+                        ticker = self.client.futures_symbol_ticker(symbol=symbol)
                         price = float(ticker.get('price', 0))
                         if price > 0:
                             self.prices[symbol] = price
                             self.last_update[symbol] = time.time()
                             success_count += 1
-                            logger.debug(f"✅ تم تحديث سعر {symbol}: ${price}")
+                            logger.debug(f"✅ Fallback: تم تحديث سعر {symbol}: ${price}")
+                    except Exception as e:
+                        logger.error(f"❌ Fallback فشل لـ {symbol}: {str(e)}")
                 
                 if success_count > 0:
-                    logger.info(f"✅ تم تحديث أسعار {success_count} من {len(self.symbols)} رمز بطلب واحد")
-                    return success_count > 0
-                else:
-                    logger.warning(f"⚠️ لم يتم تحديث أي سعر في المحاولة {attempt + 1}/3")
-                    time.sleep(2)
+                    logger.info(f"✅ Fallback: تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
+                    return True
+                logger.error("❌ فشل تحديث الأسعار حتى مع الجلب الفردي")
+                return False
+                
+            for ticker in all_tickers:
+                symbol = ticker.get('symbol')
+                if symbol in self.symbols:
+                    price = float(ticker.get('price', 0))
+                    if price > 0:
+                        self.prices[symbol] = price
+                        self.last_update[symbol] = time.time()
+                        success_count += 1
+                        logger.debug(f"✅ تم تحديث سعر {symbol}: ${price}")
             
-            logger.error("❌ فشل تحديث الأسعار بعد 3 محاولات")
-            # Fallback إلى جلب فردي
+            logger.info(f"✅ تم تحديث أسعار {success_count} من {len(self.symbols)} رمز بطلب واحد")
+            return success_count > 0
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في تحديث الأسعار: {str(e)}")
+            # Fallback إلى جلب فردي في حالة الخطأ
             success_count = 0
             for symbol in self.symbols:
                 try:
                     ticker = self.client.futures_symbol_ticker(symbol=symbol)
-                    price = float(ticker['price'])
-                    self.prices[symbol] = price
-                    self.last_update[symbol] = time.time()
-                    success_count += 1
-                    logger.debug(f"✅ fallback: تم تحديث سعر {symbol}: ${price}")
+                    price = float(ticker.get('price', 0))
+                    if price > 0:
+                        self.prices[symbol] = price
+                        self.last_update[symbol] = time.time()
+                        success_count += 1
+                        logger.debug(f"✅ Fallback: تم تحديث سعر {symbol}: ${price}")
                 except Exception as e:
-                    logger.error(f"❌ fallback فشل لـ {symbol}: {e}")
+                    logger.error(f"❌ Fallback فشل لـ {symbol}: {str(e)}")
+            
             if success_count > 0:
-                logger.info(f"✅ fallback: تم تحديث {success_count} سعر فرديًا")
+                logger.info(f"✅ Fallback: تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
                 return True
-            return False
-        except Exception as e:
-            logger.error(f"❌ خطأ في تحديث الأسعار: {e}")
+            logger.error("❌ فشل تحديث الأسعار بعد كل المحاولات")
             return False
 
     def get_price(self, symbol):
         """جلب السعر الحالي للرمز"""
         try:
-            # إذا كان السعر قديم (أكثر من 5 دقائق)، نقوم بتحديث جميع الأسعار
             last_update = self.last_update.get(symbol, 0)
-            if time.time() - last_update > 300:
-                self.update_prices()
-                
+            if time.time() - last_update > 120:  # تحديث كل دقيقتين
+                if not self.update_prices():
+                    logger.warning(f"⚠️ فشل تحديث الأسعار لـ {symbol}")
+                    # محاولة جلب فردي
+                    try:
+                        ticker = self.client.futures_symbol_ticker(symbol=symbol)
+                        price = float(ticker.get('price', 0))
+                        if price > 0:
+                            self.prices[symbol] = price
+                            self.last_update[symbol] = time.time()
+                            logger.debug(f"✅ Individual fetch: تم تحديث سعر {symbol}: ${price}")
+                            return price
+                        logger.error(f"❌ سعر غير صالح لـ {symbol}")
+                        return None
+                    except Exception as e:
+                        logger.error(f"❌ خطأ في جلب سعر فردي لـ {symbol}: {str(e)}")
+                        return None
             return self.prices.get(symbol)
         except Exception as e:
-            logger.error(f"❌ خطأ في جلب سعر {symbol}: {e}")
+            logger.error(f"❌ خطأ في جلب سعر {symbol}: {str(e)}")
             return None
 
     def is_connected(self):
         """التحقق من وجود أسعار حديثة"""
         current_time = time.time()
         recent_prices = [sym for sym in self.symbols 
-                        if current_time - self.last_update.get(sym, 0) < 300]
+                        if current_time - self.last_update.get(sym, 0) < 120]
         return len(recent_prices) > 0
 
 class TelegramNotifier:
@@ -175,9 +202,9 @@ class TelegramNotifier:
 class FuturesTradingBot:
     _instance = None
     TRADING_SETTINGS = {
-        'min_trade_size': 10,  # الحد الأدنى لحجم الصفقة
-        'max_trade_size': 30,  # الحد الأقصى لحجم الصفقة
-        'leverage': 10,  # رافعة 10x
+        'min_trade_size': 10,
+        'max_trade_size': 30,
+        'leverage': 10,
         'margin_type': 'ISOLATED',
         'base_risk_pct': 0.002,
         'risk_reward_ratio': 2.0,
@@ -185,11 +212,11 @@ class FuturesTradingBot:
         'rsi_overbought': 75,
         'rsi_oversold': 35,
         'data_interval': '5m',
-        'rescan_interval_minutes': 4,  # زيادة الفاصل لتقليل الطلبات
+        'rescan_interval_minutes': 4,
         'trade_timeout_hours': 0.5,
-        'price_update_interval': 5,  # زيادة إلى 5 دقائق لتقليل الطلبات
-        'trail_trigger_pct': 0.5,  # بدء Trailing Stop عند ربح 0.5%
-        'trail_offset_pct': 0.5,   # مسافة Trailing Stop 0.5%
+        'price_update_interval': 2,  # عودة إلى 2 دقيقة
+        'trail_trigger_pct': 0.5,
+        'trail_offset_pct': 0.5,
     }
 
     @classmethod
@@ -329,8 +356,8 @@ class FuturesTradingBot:
                     self.price_manager.update_prices()
                     time.sleep(self.TRADING_SETTINGS['price_update_interval'] * 60)
                 except Exception as e:
-                    logger.error(f"❌ خطأ في تحديث الأسعار: {e}")
-                    time.sleep(60)
+                    logger.error(f"❌ خطأ في تحديث الأسعار: {str(e)}")
+                    time.sleep(30)  # تأخير أقصر عند الخطأ
 
         threading.Thread(target=price_update_thread, daemon=True).start()
         logger.info("✅ بدء تحديث الأسعار الدوري")
