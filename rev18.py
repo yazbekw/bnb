@@ -241,10 +241,11 @@ class FuturesTradingBot:
     def get_instance(cls):
         return cls._instance
 
+    
     def __init__(self):
         if FuturesTradingBot._instance is not None:
             raise Exception("هذه الفئة تستخدم نمط Singleton")
-            
+        
         self.api_key = os.environ.get('BINANCE_API_KEY')
         self.api_secret = os.environ.get('BINANCE_API_SECRET')
         self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -253,13 +254,7 @@ class FuturesTradingBot:
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
 
-        try:
-            self.client = Client(self.api_key, self.api_secret)
-            self.test_api_connection()
-        except Exception as e:
-            logger.error(f"❌ فشل تهيئة العميل: {e}")
-            raise
-
+        # تهيئة notifier أولاً قبل أي شيء آخر
         self.notifier = None
         if self.telegram_token and self.telegram_chat_id:
             for attempt in range(3):
@@ -276,32 +271,46 @@ class FuturesTradingBot:
                         logger.error("❌ تعطيل الإشعارات بعد فشل التهيئة")
         else:
             logger.warning("⚠️ مفاتيح Telegram غير موجودة - تعطيل الإشعارات")
-        
+
+        # الآن تهيئة العميل واختبار الاتصال
+        try:
+            self.client = Client(self.api_key, self.api_secret)
+            self.test_api_connection()  # الآن notifier مهيأ
+        except Exception as e:
+            logger.error(f"❌ فشل تهيئة العميل: {e}")
+            if self.notifier:
+                self.notifier.send_message(
+                    f"❌ <b>فشل تهيئة العميل</b>\nالخطأ: {str(e)}",
+                    'error_client_init'
+                )
+            raise
+
+        # باقي الكود كما هو...
         self.symbols = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT"]
         self.verify_symbols_availability()
-        
+    
         self.symbol_settings = {
             "ETHUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
             "BNBUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
             "SOLUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 2.5},
             "DOGEUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 3.0},
         }
-        
+    
         self.active_trades = {}
-        
+    
         self.price_manager = PriceManager(self.symbols, self.client)
-        
+    
         self.load_existing_trades()
-        
+    
         self.start_price_updater()
-        
+    
         if self.active_trades and self.notifier:
             threading.Timer(10, self.test_notifications).start()
-        
+    
         self.send_startup_message()
-        
+    
         self.debug_bot_status()
-        
+    
         FuturesTradingBot._instance = self
         logger.info("✅ تم تهيئة البوت بنجاح")
 
@@ -373,7 +382,7 @@ class FuturesTradingBot:
         try:
             server_time = self.client.futures_time()
             logger.info(f"✅ اتصال Binance API نشط - وقت الخادم: {server_time}")
-            if self.notifier:
+            if self.notifier:  # تحقق من وجود notifier قبل استخدامه
                 self.notifier.send_message(
                     f"✅ <b>اتصال Binance API نشط</b>\nوقت الخادم: {server_time}\nالوقت المحلي: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}",
                     'api_connection_test'
@@ -381,7 +390,7 @@ class FuturesTradingBot:
             return True
         except Exception as e:
             logger.error(f"❌ فشل الاتصال بـ Binance API: {e}")
-            if self.notifier:
+            if self.notifier:  # تحقق من وجود notifier قبل استخدامه
                 self.notifier.send_message(
                     f"❌ <b>فشل الاتصال بـ Binance API</b>\nالخطأ: {str(e)}",
                     'error_api_connection'
