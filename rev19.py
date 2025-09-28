@@ -614,13 +614,13 @@ class FuturesTradingBot:
             sell_signal = (latest['ema5'] < latest['ema13'] and previous['ema5'] >= previous['ema13'])
 
             # تحسين RSI - تخفيف الشروط
-            rsi_buy_ok = latest['rsi'] < self.TRADING_SETTINGS['rsi_oversold'] + 15  # كان +10
-            rsi_sell_ok = latest['rsi'] > self.TRADING_SETTINGS['rsi_overbought'] - 15  # كان -10
+            rsi_buy_ok = latest['rsi'] < self.TRADING_SETTINGS['rsi_oversold'] + 15
+            rsi_sell_ok = latest['rsi'] > self.TRADING_SETTINGS['rsi_overbought'] - 15
 
             # إشارات MACD
             macd_buy_signal = (latest['macd'] > latest['macd_signal'] and previous['macd'] <= previous['macd_signal'])
             macd_sell_signal = (latest['macd'] < latest['macd_signal'] and previous['macd'] >= previous['macd_signal'])
-        
+            
             # MACD فوق/تحت الصفر
             macd_above_zero = latest['macd'] > 0
             macd_below_zero = latest['macd'] < 0
@@ -628,56 +628,63 @@ class FuturesTradingBot:
             # نظام النقاط المرن بدلاً من الشروط الصارمة
             points = 0
             max_points = 100
+            
+            # تهيئة جميع متغيرات النقاط بقيم افتراضية
+            ema_points = 0
+            rsi_points_value = 0
+            macd_points = 0
+            volume_points = 0
+            momentum_points = 0
 
             # 1. نقاط EMA (35 نقطة كحد أقصى)
             if buy_signal or sell_signal:
                 ema_diff = abs(latest['ema5'] - latest['ema13']) / latest['ema13'] * 100
-                ema_base_points = 20  # نقاط أساسية للتقاطع
-            
+                ema_base_points = 20
+                
                 # نقاط إضافية بناء على قوة التقاطع
                 additional_ema_points = min(15, ema_diff * 8)
                 ema_points = ema_base_points + additional_ema_points
-            
+                
                 points += min(35, ema_points)
                 logger.debug(f"📊 {symbol} - نقاط EMA: {min(35, ema_points):.1f}")
 
             # 2. نقاط RSI (25 نقطة كحد أقصى)
             if buy_signal and rsi_buy_ok:
-                # RSI في منطقة ذروة البيع يعطي نقاط أكثر
                 if latest['rsi'] < 25:
-                    rsi_points = 25
+                    rsi_points_value = 25
                 elif latest['rsi'] < 35:
-                    rsi_points = 20
+                    rsi_points_value = 20
                 else:
-                    rsi_points = 15
-                points += rsi_points
-                logger.debug(f"📊 {symbol} - نقاط RSI للشراء: {rsi_points}")
+                    rsi_points_value = 15
+                points += rsi_points_value
+                logger.debug(f"📊 {symbol} - نقاط RSI للشراء: {rsi_points_value}")
 
             elif sell_signal and rsi_sell_ok:
-                # RSI في منطقة ذروة الشراء يعطي نقاط أكثر
                 if latest['rsi'] > 85:
-                    rsi_points = 25
+                    rsi_points_value = 25
                 elif latest['rsi'] > 75:
-                    rsi_points = 20
+                    rsi_points_value = 20
                 else:
-                    rsi_points = 15
-                points += rsi_points
-                logger.debug(f"📊 {symbol} - نقاط RSI للبيع: {rsi_points}")
+                    rsi_points_value = 15
+                points += rsi_points_value
+                logger.debug(f"📊 {symbol} - نقاط RSI للبيع: {rsi_points_value}")
 
             # 3. نقاط MACD (20 نقطة كحد أقصى) - اختياري
             macd_required = self.TRADING_SETTINGS['require_macd_confirmation']
-        
+            
             if not macd_required or (macd_buy_signal and buy_signal) or (macd_sell_signal and sell_signal):
                 macd_strength = abs(latest['macd_histogram']) / max(0.001, abs(latest['macd'])) * 20
-            
-                # نقاط إضافية إذا كان MACD في الاتجاه الصحيح
+                
                 direction_bonus = 0
                 if (macd_buy_signal and buy_signal and macd_above_zero) or (macd_sell_signal and sell_signal and macd_below_zero):
                     direction_bonus = 5
-            
+                
                 macd_points = min(20, max(8, macd_strength + direction_bonus))
                 points += macd_points
                 logger.debug(f"📊 {symbol} - نقاط MACD: {macd_points:.1f}")
+            else:
+                macd_points = 0
+                logger.debug(f"📊 {symbol} - نقاط MACD: 0 (لم تستوف الشروط)")
 
             # 4. نقاط الحجم (10 نقاط كحد أقصى)
             volume_ratio = latest['volume'] / latest['volume_avg'] if latest['volume_avg'] > 0 else 1
@@ -689,7 +696,7 @@ class FuturesTradingBot:
                 volume_points = 3
             else:
                 volume_points = 0
-        
+            
             points += volume_points
             logger.debug(f"📊 {symbol} - نقاط الحجم: {volume_points} (نسبة: {volume_ratio:.2f})")
 
@@ -702,23 +709,23 @@ class FuturesTradingBot:
 
             # تحديد الاتجاه النهائي
             direction = None
-            min_points_required = 60  # تخفيف من 70 إلى 60
-        
+            min_points_required = 60
+            
             if points >= min_points_required:
                 if buy_signal and rsi_buy_ok:
                     direction = 'LONG'
-                    # نقاط إضافية للاتجاه الطويل القوي
-                    if latest['close'] > latest['sma20'] if hasattr(latest, 'sma20') else True:
+                    if hasattr(latest, 'sma20') and latest['close'] > latest['sma20']:
                         points = min(100, points + 5)
+                        logger.debug(f"📊 {symbol} - نقاط إضافية للاتجاه الطويل القوي")
                 elif sell_signal and rsi_sell_ok:
                     direction = 'SHORT'
-                    # نقاط إضافية للاتجاه القصير القوي
-                    if latest['close'] < latest['sma20'] if hasattr(latest, 'sma20') else True:
+                    if hasattr(latest, 'sma20') and latest['close'] < latest['sma20']:
                         points = min(100, points + 5)
+                        logger.debug(f"📊 {symbol} - نقاط إضافية للاتجاه القصير القوي")
 
             # إضافة معلومات تفصيلية للتحليل
             details = {
-                'signal_strength': points,  # استخدام نظام النقاط الجديد
+                'signal_strength': points,
                 'ema5': latest['ema5'],
                 'ema13': latest['ema13'],
                 'rsi': latest['rsi'],
@@ -736,11 +743,11 @@ class FuturesTradingBot:
                 'volume_avg': latest['volume_avg'],
                 'volume_ratio': volume_ratio,
                 'points_breakdown': {
-                    'ema_points': min(35, ema_points) if buy_signal or sell_signal else 0,
-                    'rsi_points': volume_points,
-                    'macd_points': macd_points if not macd_required or (macd_buy_signal or macd_sell_signal) else 0,
+                    'ema_points': ema_points,
+                    'rsi_points': rsi_points_value,
+                    'macd_points': macd_points,
                     'volume_points': volume_points,
-                    'momentum_points': momentum_points if hasattr(latest, 'momentum') else 0
+                    'momentum_points': momentum_points
                 }
             }
 
@@ -760,6 +767,9 @@ class FuturesTradingBot:
 
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل {symbol}: {e}")
+            import traceback
+            logger.error(f"❌ تفاصيل الخطأ: {traceback.format_exc()}")
+            
             if self.notifier:
                 self.notifier.send_message(
                     f"❌ <b>خطأ في تحليل رمز</b>\nالعملة: {symbol}\nالخطأ: {str(e)}\nالوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}",
