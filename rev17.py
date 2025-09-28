@@ -1289,15 +1289,20 @@ class FuturesTradingBot:
 
     def send_daily_status(self):
         if self.notifier:
-            self.notifier.send_message(
-                f"📅 <b>تقرير يومي لتأكيد التشغيل</b>\n"
-                f"الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"عدد الصفقات النشطة: {len(self.active_trades)}\n"
-                f"الرموز المتاحة: {', '.join(self.symbols)}\n"
-                f"حالة الاتصال بـ Binance: {'متصل' if self.price_manager.is_connected() else 'غير متصل'}\n"
-                f"البوت يعمل بشكل طبيعي",
-                'daily_status'
-            )
+            try:
+                self.notifier.send_message(
+                    f"📅 <b>تقرير يومي لتأكيد التشغيل</b>\n"
+                    f"الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"عدد الصفقات النشطة: {len(self.active_trades)}\n"
+                    f"الرموز المتاحة: {', '.join(self.symbols)}\n"
+                    f"حالة الاتصال بـ Binance: {'متصل' if self.price_manager.is_connected() else 'غير متصل'}\n"
+                    f"البوت يعمل بشكل طبيعي",
+                    'daily_status'
+                )
+            except Exception as e:
+                logger.error(f"❌ خطأ في إرسال التقرير اليومي: {e}")
+        else:
+            logger.warning("⚠️ لا يمكن إرسال التقرير اليومي: Telegram Notifier غير مُهيأ")
 
 def main():
     try:
