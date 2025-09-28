@@ -1303,8 +1303,6 @@ class FuturesTradingBot:
 
     def run(self):
         logger.info("🚀 بدء تشغيل بوت العقود الآجلة...")
-        def run(self):
-        logger.info("🚀 بدء تشغيل بوت العقود الآجلة...")
         
         schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.scan_market)
         schedule.every(2).minutes.do(self.manage_trades)
