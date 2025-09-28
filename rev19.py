@@ -677,9 +677,9 @@ class FuturesTradingBot:
             if macd_buy_signal or macd_sell_signal or not self.TRADING_SETTINGS['require_macd_confirmation']:
                 macd_strength = abs(latest['macd_histogram']) / max(0.001, abs(latest['macd'])) * 20
                 direction_bonus = 0
-               if (macd_buy_signal and buy_signal and macd_above_zero) or (macd_sell_signal and sell_signal and macd_below_zero):
+                if (macd_buy_signal and buy_signal and macd_above_zero) or (macd_sell_signal and sell_signal and macd_below_zero):
                     direction_bonus = 5
-               macd_points = min(20, max(8, macd_strength + direction_bonus))
+                macd_points = min(20, max(8, macd_strength + direction_bonus))
                 points += macd_points
             
             # 4. نقاط الحجم (10 نقاط كحد أقصى)
