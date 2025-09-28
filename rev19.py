@@ -812,7 +812,7 @@ class FuturesTradingBot:
                 logger.info(f"⏸️ الحد الأقصى للصفقات العقود ({self.TRADING_SETTINGS['max_active_trades']}) لـ {symbol}")
                 return False
 
-            if analysis['signal_strength'] < 70 or analysis['direction'] != direction:
+            if analysis['signal_strength'] < 60 or analysis['direction'] != direction:
                 logger.info(f"❌ إشارة غير صالحة لـ {symbol}: القوة {analysis['signal_strength']}%, الاتجاه {analysis['direction']}")
                 return False
 
