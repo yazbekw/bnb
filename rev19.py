@@ -936,18 +936,98 @@ class FuturesTradingBot:
     def manage_trades(self):
         self.manage_futures_trades()
 
+    
+    def update_active_trades(self):
+        """تحديث قائمة الصفقات النشطة دورياً من API"""
+        try:
+            account_info = self.client.futures_account()
+            positions = account_info['positions']
+            
+            current_positions = {}
+            
+            for position in positions:
+                symbol = position['symbol']
+                if symbol in self.symbols:
+                    quantity = float(position['positionAmt'])
+                    if quantity != 0:
+                        # الصفقة لا تزال نشطة
+                        if symbol in self.active_trades:
+                            # تحديث البيانات الحالية
+                            current_positions[symbol] = self.active_trades[symbol]
+                        else:
+                            # صفقة جديدة لم تكن في القائمة
+                            entry_price = float(position['entryPrice'])
+                            leverage = float(position['leverage'])
+                            side = "LONG" if quantity > 0 else "SHORT"
+                            
+                            trade_data = {
+                                'symbol': symbol,
+                                'quantity': abs(quantity),
+                                'entry_price': entry_price,
+                                'leverage': leverage,
+                                'side': side,
+                                'timestamp': datetime.now(damascus_tz),
+                                'status': 'open',
+                                'last_notification': datetime.now(damascus_tz),
+                                'trade_type': 'futures',
+                                'highest_price': entry_price if side == 'LONG' else entry_price,
+                                'lowest_price': entry_price if side == 'SHORT' else entry_price,
+                                'trail_started': False,
+                                'extended': False
+                            }
+                            current_positions[symbol] = trade_data
+                            logger.info(f"✅ اكتشاف صفقة جديدة: {symbol} - {side} - كمية: {abs(quantity)}")
+            
+            # إزالة الصفقات المغلقة
+            removed_trades = set(self.active_trades.keys()) - set(current_positions.keys())
+            for symbol in removed_trades:
+                logger.info(f"🔄 إزالة صفقة مغلقة من القائمة: {symbol}")
+                if self.notifier:
+                    self.notifier.send_message(
+                        f"🔄 <b>إزالة صفقة مغلقة</b>\nالعملة: {symbol}\nتم إغلاق الصفقة خارج البوت\nالوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}",
+                        f'trade_removed_{symbol}'
+                    )
+            
+            self.active_trades = current_positions
+            logger.info(f"✅ تم تحديث الصفقات النشطة: {len(self.active_trades)} صفقة")
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في تحديث الصفقات النشطة: {e}")
+
     def manage_futures_trades(self):
+        """إدارة الصفقات مع التحقق من وجودها فعلياً"""
         if not self.active_trades:
             logger.info("🔍 لا توجد صفقات نشطة في العقود")
+            return
+        
+        # التحقق أولاً من الصفقات المغلقة خارج البوت
+        self.update_active_trades()
+        
+        # إذا لم تعد هناك صفقات بعد التحديث
+        if not self.active_trades:
+            logger.info("🔍 لا توجد صفقات نشطة بعد التحديث")
             return
         
         logger.info(f"🔍 إدارة {len(self.active_trades)} صفقة عقود نشطة")
         
         for symbol, trade in list(self.active_trades.items()):
             try:
+                # التحقق مرة أخرى من وجود المركز
                 current_price = self.get_current_price(symbol)
                 if current_price is None:
                     continue
+
+                # التحقق من وجود المركز فعلياً في API
+                try:
+                    position_info = self.client.futures_position_information(symbol=symbol)
+                    if position_info:
+                        current_position_amt = float(position_info[0]['positionAmt'])
+                        if current_position_amt == 0:
+                            logger.info(f"🔄 المركز مغلق فعلياً لـ {symbol}، إزالته من القائمة")
+                            del self.active_trades[symbol]
+                            continue
+                except Exception as e:
+                    logger.error(f"❌ خطأ في التحقق من المركز لـ {symbol}: {e}")
 
                 if trade['side'] == 'LONG':
                     pnl_percent = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
@@ -1030,10 +1110,27 @@ class FuturesTradingBot:
 
     def close_futures_trade(self, symbol, current_price, reason):
         try:
+            # التحقق أولاً إذا كانت الصفقة لا تزال نشطة
+            if symbol not in self.active_trades:
+                logger.info(f"ℹ️ الصفقة {symbol} غير موجودة في القائمة النشطة")
+                return True  # تعتبر ناجحة لأنها مغلقة بالفعل
+
             trade = self.active_trades.get(symbol)
             if not trade:
                 logger.warning(f"⚠️ لا توجد صفقة للإغلاق: {symbol}")
-                return False
+                return True  # تعتبر ناجحة
+
+            # التحقق من وجود المركز فعلياً
+            try:
+                position_info = self.client.futures_position_information(symbol=symbol)
+                if position_info:
+                    current_position_amt = float(position_info[0]['positionAmt'])
+                    if current_position_amt == 0:
+                        logger.info(f"✅ الصفقة {symbol} مغلقة بالفعل على المنصة")
+                        del self.active_trades[symbol]
+                        return True
+            except Exception as e:
+                logger.error(f"❌ خطأ في التحقق من المركز لـ {symbol}: {e}")
 
             side = Client.SIDE_SELL if trade['side'] == 'LONG' else Client.SIDE_BUY
             quantity = trade['quantity']
@@ -1048,7 +1145,7 @@ class FuturesTradingBot:
                     reduceOnly=True  # لضمان أنه إغلاق فقط
                 )
                 if order['status'] == 'FILLED':
-                    # حساب PNL وإرسال إشعار (كما في الكود الأصلي)
+                    # حساب PNL وإرسال إشعار
                     exit_price = float(order['avgPrice'])
                     pnl_percent = ((exit_price - trade['entry_price']) / trade['entry_price']) * 100 if trade['side'] == 'LONG' else ((trade['entry_price'] - exit_price) / trade['entry_price']) * 100
                     pnl_usd = pnl_percent * quantity * trade['entry_price'] / 100
@@ -1162,6 +1259,7 @@ class FuturesTradingBot:
                 )
             return False
 
+
     def scan_market(self):
         logger.info("🔍 بدء فحص السوق للعقود الآجلة...")
         
@@ -1205,9 +1303,12 @@ class FuturesTradingBot:
 
     def run(self):
         logger.info("🚀 بدء تشغيل بوت العقود الآجلة...")
+        def run(self):
+        logger.info("🚀 بدء تشغيل بوت العقود الآجلة...")
         
         schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.scan_market)
         schedule.every(2).minutes.do(self.manage_trades)
+        schedule.every(5).minutes.do(self.update_active_trades)  # تحديث الصفقات النشطة كل 5 دقائق
         
         while True:
             try:
