@@ -225,16 +225,18 @@ class FuturesTradingBot:
         'max_active_trades': 3,
         'rsi_overbought': 75,
         'rsi_oversold': 35,
+        'rsi_buy_threshold': 55,  # بدلاً من 50
+        'rsi_sell_threshold': 55,  # بدلاً من 60
         'data_interval': '5m',
-        'rescan_interval_minutes': 10,
-        'trade_timeout_hours': 0.5,
-        'extended_timeout_hours': 0.75,
+        'rescan_interval_minutes': 5,
+        'trade_timeout_hours': 0.3,
+        'extended_timeout_hours': 0.5,
         'extended_take_profit_multiplier': 0.5,
         'price_update_interval': 5,
         'trail_trigger_pct': 0.5,
         'trail_offset_pct': 0.5,
         'macd_signal_threshold': 0.001,
-        'require_macd_confirmation': True,
+        'require_macd_confirmation': False,
     }
 
     @classmethod
@@ -616,6 +618,8 @@ class FuturesTradingBot:
             # تحسين RSI - تخفيف الشروط
             rsi_buy_ok = latest['rsi'] < self.TRADING_SETTINGS['rsi_oversold'] + 15
             rsi_sell_ok = latest['rsi'] > self.TRADING_SETTINGS['rsi_overbought'] - 15
+            rsi_buy_ok = latest['rsi'] < self.TRADING_SETTINGS['rsi_buy_threshold']
+            rsi_sell_ok = latest['rsi'] > self.TRADING_SETTINGS['rsi_sell_threshold']
 
             # إشارات MACD
             macd_buy_signal = (latest['macd'] > latest['macd_signal'] and previous['macd'] <= previous['macd_signal'])
@@ -670,33 +674,24 @@ class FuturesTradingBot:
                 logger.debug(f"📊 {symbol} - نقاط RSI للبيع: {rsi_points_value}")
 
             # 3. نقاط MACD (20 نقطة كحد أقصى) - اختياري
-            macd_required = self.TRADING_SETTINGS['require_macd_confirmation']
-            
-            if not macd_required or (macd_buy_signal and buy_signal) or (macd_sell_signal and sell_signal):
+            if macd_buy_signal or macd_sell_signal or not self.TRADING_SETTINGS['require_macd_confirmation']:
                 macd_strength = abs(latest['macd_histogram']) / max(0.001, abs(latest['macd'])) * 20
-                
                 direction_bonus = 0
-                if (macd_buy_signal and buy_signal and macd_above_zero) or (macd_sell_signal and sell_signal and macd_below_zero):
+               if (macd_buy_signal and buy_signal and macd_above_zero) or (macd_sell_signal and sell_signal and macd_below_zero):
                     direction_bonus = 5
-                
-                macd_points = min(20, max(8, macd_strength + direction_bonus))
+               macd_points = min(20, max(8, macd_strength + direction_bonus))
                 points += macd_points
-                logger.debug(f"📊 {symbol} - نقاط MACD: {macd_points:.1f}")
-            else:
-                macd_points = 0
-                logger.debug(f"📊 {symbol} - نقاط MACD: 0 (لم تستوف الشروط)")
-
+            
             # 4. نقاط الحجم (10 نقاط كحد أقصى)
             volume_ratio = latest['volume'] / latest['volume_avg'] if latest['volume_avg'] > 0 else 1
-            if volume_ratio > 1.5:
+            if volume_ratio > 1.3:  # خفض من 1.5
                 volume_points = 10
-            elif volume_ratio > 1.2:
+            elif volume_ratio > 1.0:  # خفض من 1.2
                 volume_points = 7
-            elif volume_ratio > 1.0:
+            elif volume_ratio > 0.8:  # خفض من 1.0
                 volume_points = 3
             else:
                 volume_points = 0
-            
             points += volume_points
             logger.debug(f"📊 {symbol} - نقاط الحجم: {volume_points} (نسبة: {volume_ratio:.2f})")
 
