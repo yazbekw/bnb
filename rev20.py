@@ -57,6 +57,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+
 class PriceManager:
     def __init__(self, symbols, client):
         self.symbols = symbols
@@ -65,21 +67,20 @@ class PriceManager:
         self.last_update = {}
 
     def update_prices(self):
-        """تحديث الأسعار لجميع الرموز باستخدام طلب واحد لجميع التيكرز"""
+        """تحديث الأسعار لجميع الرموز باستخدام طلب جماعي مع الرجوع للفردي إذا لزم الأمر"""
         try:
             success_count = 0
             all_tickers = self.client.futures_ticker()
             logger.info(f"عدد التيكرز المجلوبة: {len(all_tickers) if all_tickers else 0}")
-        
             logger.info(f"الرموز المطلوبة: {self.symbols}")
-        
+            
             if not all_tickers:
-                logger.warning("⚠️ فشل جلب التيكرز، جاري المحاولة الفردية...")
+                logger.warning("⚠️ فشل جلب التيكرز، الرجوع مباشرة للفردي...")
                 return self.fallback_price_update()
             
             sample_symbols = [ticker['symbol'] for ticker in all_tickers[:10]]
             logger.info(f"عينة من الرموز المستلمة: {sample_symbols}")
-        
+            
             for ticker in all_tickers:
                 symbol = ticker.get('symbol')
                 if symbol in self.symbols:
@@ -89,21 +90,20 @@ class PriceManager:
                         self.last_update[symbol] = time.time()
                         success_count += 1
                         logger.debug(f"✅ تم تحديث سعر {symbol}: ${price}")
-        
-            logger.info(f"✅ تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
-        
+            
             if success_count == 0:
-                logger.warning("❌ لم يتم العثور على أي رمز في التيكرز، جاري Fallback...")
+                logger.warning("⚠️ لم يتم العثور على أي رمز في التيكرز، جاري الرجوع للفردي...")
                 return self.fallback_price_update()
             
+            logger.info(f"✅ تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
             return True
             
         except Exception as e:
-            logger.error(f"❌ خطأ في تحديث الأسعار: {str(e)}")
+            logger.error(f"❌ خطأ في تحديث الأسعار الجماعي: {str(e)}")
             return self.fallback_price_update()
 
     def fallback_price_update(self):
-        """Fallback للجلب الفردي عند الفشل"""
+        """جلب الأسعار الفردية كخطة احتياطية"""
         success_count = 0
         for symbol in self.symbols:
             try:
@@ -118,11 +118,10 @@ class PriceManager:
                     logger.warning(f"⚠️ Fallback: سعر غير صالح لـ {symbol}")
             except Exception as e:
                 logger.error(f"❌ Fallback فشل لـ {symbol}: {str(e)}")
-    
+        
         if success_count > 0:
-            logger.info(f"✅ Fallback: تم تحديث أسرار {success_count} من {len(self.symbols)} رمز")
+            logger.info(f"✅ Fallback: تم تحديث أسعار {success_count} من {len(self.symbols)} رمز")
             return True
-    
         logger.error("❌ فشل تحديث الأسعار بعد كل المحاولات")
         return False
 
@@ -133,19 +132,7 @@ class PriceManager:
             if time.time() - last_update > 120:
                 if not self.update_prices():
                     logger.warning(f"⚠️ فشل تحديث الأسعار لـ {symbol}")
-                    try:
-                        ticker = self.client.futures_symbol_ticker(symbol=symbol)
-                        price = float(ticker.get('price', 0))
-                        if price > 0:
-                            self.prices[symbol] = price
-                            self.last_update[symbol] = time.time()
-                            logger.debug(f"✅ Individual fetch: تم تحديث سعر {symbol}: ${price}")
-                            return price
-                        logger.error(f"❌ سعر غير صالح لـ {symbol}")
-                        return None
-                    except Exception as e:
-                        logger.error(f"❌ خطأ في جلب سعر فردي لـ {symbol}: {str(e)}")
-                        return None
+                    return None
             return self.prices.get(symbol)
         except Exception as e:
             logger.error(f"❌ خطأ في جلب سعر {symbol}: {str(e)}")
