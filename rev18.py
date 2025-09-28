@@ -292,6 +292,8 @@ class FuturesTradingBot:
         self.symbol_settings = {
             "ETHUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
             "BNBUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
+            "ADAUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
+            "XRPUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
             "SOLUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 2.5},
             "DOGEUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 3.0},
         }
