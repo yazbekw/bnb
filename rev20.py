@@ -268,6 +268,9 @@ class FuturesTradingBot:
         'trail_offset_pct': 0.5,
         'macd_signal_threshold': 0.001,
         'require_macd_confirmation': False,
+        'min_signal_strength': 50,           # القوة الدنيا لفتح صفقة
+        'medium_signal_strength': 45,        # للإشعارات فقط
+        'strong_signal_bonus': 65,           # إشارة قوية جداً
     }
 
     @classmethod
@@ -664,13 +667,13 @@ class FuturesTradingBot:
 
             macd_buy_signal = (latest['macd'] > latest['macd_signal'] and previous['macd'] <= previous['macd_signal'])
             macd_sell_signal = (latest['macd'] < latest['macd_signal'] and previous['macd'] >= previous['macd_signal'])
-            
+        
             macd_above_zero = latest['macd'] > 0
             macd_below_zero = latest['macd'] < 0
 
             points = 0
             max_points = 100
-            
+        
             ema_points = 0
             rsi_points_value = 0
             macd_points = 0
@@ -740,19 +743,24 @@ class FuturesTradingBot:
                 points += momentum_points
                 logger.debug(f"📊 {symbol} - نقاط الزخم: {momentum_points:.1f}")
 
+            # ⭐⭐ استخدام الإعدادات الجديدة لقوة الإشارة ⭐⭐
+            min_points_required = self.TRADING_SETTINGS.get('min_signal_strength', 55)
+            medium_signal_strength = self.TRADING_SETTINGS.get('medium_signal_strength', 50)
+            strong_signal_bonus = self.TRADING_SETTINGS.get('strong_signal_bonus', 70)
+
             direction = None
-            min_points_required = 55
             if points >= min_points_required:
                 if buy_signal and rsi_buy_ok:
                     direction = 'LONG'
-                    if hasattr(latest, 'sma20') and latest['close'] > latest['sma20']:
-                        points = min(100, points + 5)
-                        logger.debug(f"📊 {symbol} - نقاط إضافية للاتجاه الطويل القوي")
+                    # مكافأة الإشارات القوية جداً
+                    if points >= strong_signal_bonus:
+                        points = min(100, points + 10)
+                        logger.info(f"🎯 إشارة قوية جداً لـ {symbol}: +10 نقاط إضافية")
                 elif sell_signal and rsi_sell_ok:
                     direction = 'SHORT'
-                    if hasattr(latest, 'sma20') and latest['close'] < latest['sma20']:
-                        points = min(100, points + 5)
-                        logger.debug(f"📊 {symbol} - نقاط إضافية للاتجاه القصير القوي")
+                    if points >= strong_signal_bonus:
+                        points = min(100, points + 10)
+                        logger.info(f"🎯 إشارة قوية جداً لـ {symbol}: +10 نقاط إضافية")
 
             details = {
                 'signal_strength': points,
@@ -779,7 +787,8 @@ class FuturesTradingBot:
                     'volume_points': volume_points,
                     'momentum_points': momentum_points
                 },
-                'rejection_reason': rejection_reason
+                'rejection_reason': rejection_reason,
+                'min_points_required': min_points_required
             }
 
             logger.info(f"🔍 تحليل {symbol} انتهى: النقاط {points}/{max_points}, الاتجاه {direction}, "
@@ -788,8 +797,21 @@ class FuturesTradingBot:
 
             if points >= min_points_required and direction:
                 logger.info(f"🎯 إشارة قوية لـ {symbol}: {direction} بنقاط {points}/{max_points}")
-            elif points >= 50:
+            elif points >= medium_signal_strength:
                 logger.info(f"⚠️ إشارة متوسطة لـ {symbol}: نقاط {points}/{max_points} (تحتاج {min_points_required})")
+                # إشعار للإشارات المتوسطة
+                if self.notifier and points >= medium_signal_strength:
+                    self.notifier.send_message(
+                        f"⚠️ <b>إشارة متوسطة</b>\n"
+                        f"العملة: {symbol}\n"
+                        f"النقاط: {points}/{max_points}\n"
+                        f"الاتجاه: {'شراء' if buy_signal else 'بيع'}\n"
+                        f"RSI: {latest['rsi']:.1f}\n"
+                        f"EMA5/13: {latest['ema5']:.4f}/{latest['ema13']:.4f}\n"
+                        f"تحتاج {min_points_required} نقطة للدخول\n"
+                        f"الوقت: {datetime.now(damascus_tz).strftime('%H:%M:%S')}",
+                        f'medium_signal_{symbol}'
+                    )
             else:
                 logger.info(f"ℹ️ إشارة ضعيفة لـ {symbol}: نقاط {points}/{max_points}")
 
@@ -799,7 +821,7 @@ class FuturesTradingBot:
             logger.error(f"❌ خطأ في تحليل {symbol}: {e}")
             import traceback
             logger.error(f"❌ تفاصيل الخطأ: {traceback.format_exc()}")
-            
+        
             if self.notifier:
                 self.notifier.send_message(
                     f"❌ <b>خطأ في تحليل رمز</b>\nالعملة: {symbol}\nالخطأ: {str(e)}\nالوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}",
