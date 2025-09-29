@@ -154,44 +154,73 @@ class TelegramNotifier:
         self.notification_types = {}
 
     def send_message(self, message, message_type='info', retries=3, delay=5):
-        """إرسال رسالة إلى Telegram مع إعادة محاولة وتقليل منع التكرار للإشعارات الهامة"""
         try:
-            current_time = time.time()
-            last_sent = self.notification_types.get(message_type, 0)
+            # تقليم الرسالة إذا كانت طويلة
+            if len(message) > 4096:
+                message = message[:4090] + "..."
             
-            min_interval = 0 if message_type.startswith('error') or message_type in ['trade_open_futures', 'trade_close_futures', 'extend_futures', 'signal_futures'] else 10
-            if current_time - last_sent < min_interval:
-                logger.info(f"⏳ تخطي إشعار {message_type} بسبب منع التكرار")
-                return True
-                
-            self.notification_types[message_type] = current_time
+            # إضافة timestamp لمنع التكرار
+            current_time = time.time()
+            message_hash = hashlib.md5(f"{message_type}_{message}".encode()).hexdigest()
+            
+            if message_hash in self.recent_messages:
+                if current_time - self.recent_messages[message_hash] < 60:  # دقيقة واحدة
+                    return True
+            
+            self.recent_messages[message_hash] = current_time
             
             url = f"{self.base_url}/sendMessage"
             payload = {
                 'chat_id': self.chat_id, 
                 'text': message, 
-                'parse_mode': 'HTML'
+                'parse_mode': 'HTML',
+                'disable_web_page_preview': True
             }
             
             for attempt in range(retries):
                 try:
-                    response = requests.post(url, data=payload, timeout=10)
+                    response = requests.post(url, data=payload, timeout=15)
+                    
                     if response.status_code == 200:
-                        logger.info(f"✅ تم إرسال إشعار Telegram: {message_type} (محاولة {attempt+1})")
-                        return True
-                    else:
-                        logger.error(f"❌ فشل إرسال Telegram (محاولة {attempt+1}): {response.status_code} - {response.text}")
-                        if response.status_code == 429:
-                            time.sleep(delay * (2 ** attempt))
+                        result = response.json()
+                        if result.get('ok'):
+                            logger.info(f"✅ تم إرسال إشعار Telegram: {message_type}")
+                            return True
                         else:
-                            break
-                except Exception as e:
-                    logger.error(f"❌ خطأ في إرسال Telegram (محاولة {attempt+1}): {e}")
+                            error_desc = result.get('description', 'Unknown error')
+                            logger.error(f"❌ Telegram API error: {error_desc}")
+                    
+                    elif response.status_code == 429:
+                        # Rate limiting
+                        retry_after = int(response.headers.get('Retry-After', 60))
+                        logger.warning(f"⏳ Rate limited, retrying after {retry_after}s")
+                        time.sleep(retry_after)
+                        continue
+                        
+                    elif response.status_code >= 500:
+                        # Server errors - retry
+                        logger.warning(f"⚠️ Telegram server error {response.status_code}")
+                        time.sleep(delay * (2 ** attempt))
+                        continue
+                        
+                    else:
+                        logger.error(f"❌ Failed to send Telegram (attempt {attempt+1}): {response.status_code}")
+                        break
+                        
+                except requests.exceptions.Timeout:
+                    logger.warning(f"⏰ Timeout sending Telegram (attempt {attempt+1})")
                     time.sleep(delay * (2 ** attempt))
+                except requests.exceptions.ConnectionError:
+                    logger.warning(f"🌐 Connection error sending Telegram (attempt {attempt+1})")
+                    time.sleep(delay * (2 ** attempt))
+                except Exception as e:
+                    logger.error(f"❌ Unexpected error sending Telegram (attempt {attempt+1}): {e}")
+                    time.sleep(delay * (2 ** attempt))
+            
             return False
                 
         except Exception as e:
-            logger.error(f"❌ خطأ عام في إرسال Telegram: {e}")
+            logger.error(f"❌ General error in Telegram sending: {e}")
             return False
 
 class FuturesTradingBot:
