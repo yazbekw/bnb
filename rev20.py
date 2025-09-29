@@ -243,6 +243,7 @@ class TelegramNotifier:
         ]
         for msg_hash in expired_messages:
             del self.recent_messages[msg_hash]
+            
 class FuturesTradingBot:
     _instance = None
     TRADING_SETTINGS = {
@@ -422,7 +423,32 @@ class FuturesTradingBot:
             raise
 
     def send_startup_message(self):
-        pass
+        """إرسال رسالة بدء التشغيل"""
+        if self.notifier:
+            try:
+                symbols_count = len(self.symbols)
+                active_trades_count = len(self.active_trades)
+            
+                message = (
+                    "🚀 <b>بدء تشغيل بوت العقود الآجلة</b>\n\n"
+                    f"📊 <b>الإعدادات:</b>\n"
+                    f"• عدد الرموز: {symbols_count}\n"
+                    f"• الصفقات النشطة: {active_trades_count}\n"
+                    f"• الرافعة: {self.TRADING_SETTINGS['leverage']}x\n"
+                    f"• الفحص كل: {self.TRADING_SETTINGS['rescan_interval_minutes']} دقائق\n\n"
+                    f"🕒 <b>وقت البدء:</b>\n"
+                    f"{datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"⏰ توقيت: دمشق"
+                )
+            
+                success = self.notifier.send_message(message, 'startup')
+                if success:
+                    logger.info("✅ تم إرسال رسالة بدء التشغيل")
+                else:
+                    logger.error("❌ فشل إرسال رسالة بدء التشغيل")
+                
+            except Exception as e:
+                logger.error(f"❌ خطأ في إرسال رسالة البدء: {e}")
 
     def start_price_updater(self):
         def price_update_thread():
