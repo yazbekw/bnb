@@ -235,8 +235,8 @@ class FuturesTradingBot:
         'max_active_trades': 3,
         'rsi_overbought': 75,
         'rsi_oversold': 35,
-        'rsi_buy_threshold': 55,
-        'rsi_sell_threshold': 55,
+        'rsi_buy_threshold': 35,
+        'rsi_sell_threshold': 75,
         'data_interval': '5m',
         'rescan_interval_minutes': 5,
         'trade_timeout_hours': 0.3,
@@ -796,7 +796,7 @@ class FuturesTradingBot:
                 logger.info(f"⏸️ الحد الأقصى للصفقات العقود ({self.TRADING_SETTINGS['max_active_trades']}) لـ {symbol}")
                 return False
 
-            if analysis['signal_strength'] < 60 or analysis['direction'] != direction:
+            if analysis['signal_strength'] < 50 or analysis['direction'] != direction:
                 logger.info(f"❌ إشارة غير صالحة لـ {symbol}: القوة {analysis['signal_strength']}%, الاتجاه {analysis['direction']}")
                 return False
 
