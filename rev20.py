@@ -259,7 +259,7 @@ class FuturesTradingBot:
         'rsi_buy_threshold': 35,
         'rsi_sell_threshold': 75,
         'data_interval': '5m',
-        'rescan_interval_minutes': 5,
+        'rescan_interval_minutes': 10,
         'trade_timeout_hours': 0.3,
         'extended_timeout_hours': 0.5,
         'extended_take_profit_multiplier': 0.5,
@@ -317,12 +317,10 @@ class FuturesTradingBot:
                 )
             raise
 
-        self.symbols = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT", "XPLUSDT"]
+        self.symbols = ["SOLUSDT", "DOGEUSDT", "XPLUSDT"]
         self.verify_symbols_availability()
     
         self.symbol_settings = {
-            "ETHUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
-            "BNBUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 1.5},
             "XPLUSDT": {'stop_loss_pct': 1.5, 'take_profit_pct': 2.5},
             "SOLUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 2.5},
             "DOGEUSDT": {'stop_loss_pct': 1.0, 'take_profit_pct': 3.0},
