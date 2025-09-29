@@ -152,23 +152,34 @@ class TelegramNotifier:
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.last_notification = time.time()
         self.notification_types = {}
+        self.recent_messages = {}  # ✅ إضافة هذا السطر
+        self.message_cooldown = 60  # ✅ منع التكرار لمدة 60 ثانية
 
     def send_message(self, message, message_type='info', retries=3, delay=5):
         try:
             # تقليم الرسالة إذا كانت طويلة
             if len(message) > 4096:
                 message = message[:4090] + "..."
-            
+
             # إضافة timestamp لمنع التكرار
             current_time = time.time()
             message_hash = hashlib.md5(f"{message_type}_{message}".encode()).hexdigest()
             
-            if message_hash in self.recent_messages:
-                if current_time - self.recent_messages[message_hash] < 60:  # دقيقة واحدة
+            # ✅ التحقق من التكرار مع التعامل الآمن
+            if hasattr(self, 'recent_messages') and message_hash in self.recent_messages:
+                if current_time - self.recent_messages[message_hash] < self.message_cooldown:
+                    logger.debug(f"⏳ تخطي إشعار مكرر: {message_type}")
                     return True
+
+            # ✅ تهيئة recent_messages إذا لم تكن موجودة
+            if not hasattr(self, 'recent_messages'):
+                self.recent_messages = {}
             
             self.recent_messages[message_hash] = current_time
             
+            # تنظيف الرسائل القديمة
+            self._clean_old_messages()
+
             url = f"{self.base_url}/sendMessage"
             payload = {
                 'chat_id': self.chat_id, 
@@ -191,14 +202,12 @@ class TelegramNotifier:
                             logger.error(f"❌ Telegram API error: {error_desc}")
                     
                     elif response.status_code == 429:
-                        # Rate limiting
                         retry_after = int(response.headers.get('Retry-After', 60))
                         logger.warning(f"⏳ Rate limited, retrying after {retry_after}s")
                         time.sleep(retry_after)
                         continue
                         
                     elif response.status_code >= 500:
-                        # Server errors - retry
                         logger.warning(f"⚠️ Telegram server error {response.status_code}")
                         time.sleep(delay * (2 ** attempt))
                         continue
@@ -217,12 +226,22 @@ class TelegramNotifier:
                     logger.error(f"❌ Unexpected error sending Telegram (attempt {attempt+1}): {e}")
                     time.sleep(delay * (2 ** attempt))
             
+            logger.error(f"❌ فشل إرسال الإشعار بعد {retries} محاولات")
             return False
                 
         except Exception as e:
             logger.error(f"❌ General error in Telegram sending: {e}")
             return False
 
+    def _clean_old_messages(self):
+        """تنظيف الرسائل القديمة من الذاكرة"""
+        current_time = time.time()
+        expired_messages = [
+            msg_hash for msg_hash, timestamp in self.recent_messages.items()
+            if current_time - timestamp > self.message_cooldown * 2
+        ]
+        for msg_hash in expired_messages:
+            del self.recent_messages[msg_hash]
 class FuturesTradingBot:
     _instance = None
     TRADING_SETTINGS = {
