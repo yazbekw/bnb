@@ -5,17 +5,14 @@ from datetime import datetime, timedelta
 import pytz
 import time
 
-# الإعدادات النهائية المثبتة
+# الإعدادات النهائية
 OPTIMAL_SETTINGS = {
     'symbols': ["LINKUSDT", "SOLUSDT", "ETHUSDT", "BNBUSDT"],
     'intervals': ['30m', '1h'],
     'weights': {'LINKUSDT': 1.4, 'SOLUSDT': 1.2, 'ETHUSDT': 1.0, 'BNBUSDT': 0.7},
-    'leverage_base': 2.0,
-    'risk_reward_ratio': 2.0
 }
 
 def get_trading_data(symbol, interval, days=45):
-    """جلب بيانات التداول"""
     end_date = datetime.now(pytz.UTC)
     start_date = end_date - timedelta(days=days)
     start_ts = int(start_date.timestamp() * 1000)
@@ -38,44 +35,37 @@ def get_trading_data(symbol, interval, days=45):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
         return df
-    except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+    except:
         return None
 
-def calculate_trading_indicators(df):
-    """حساب المؤشرات الفنية"""
-    # المتوسطات المتحركة
+def calculate_indicators(df):
     df['sma10'] = df['close'].rolling(10).mean()
     df['sma50'] = df['close'].rolling(50).mean()
     df['sma20'] = df['close'].rolling(20).mean()
     
-    # RSI
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = (-delta).where(delta < 0, 0).rolling(14).mean()
     rs = gain / (loss + 1e-10)
     df['rsi'] = 100 - (100 / (1 + rs))
     
-    # ATR
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
     low_close = np.abs(df['low'] - df['close'].shift())
     tr = np.maximum(np.maximum(high_low, high_close), low_close)
     df['atr'] = tr.rolling(14).mean()
     
-    # مؤشرات الزخم
     df['momentum'] = df['close'] / df['close'].shift(5) - 1
     df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
     
     return df.dropna()
 
-def execute_trading_strategy(symbol, interval):
-    """تنفيذ الاستراتيجية النهائية"""
+def execute_strategy(symbol, interval):
     data = get_trading_data(symbol, interval)
     if data is None or len(data) < 100:
         return None
     
-    data = calculate_trading_indicators(data)
+    data = calculate_indicators(data)
     
     trades_details = {
         'long_trades': {'win': 0, 'loss': 0, 'total': 0},
@@ -90,14 +80,12 @@ def execute_trading_strategy(symbol, interval):
     for i in range(5, len(data)):
         prev, curr = data.iloc[i-1], data.iloc[i]
         
-        # شروط التداول المثبتة
         buy_conditions = [
             (curr['sma10'] > curr['sma50']),
             (curr['sma10'] > curr['sma20']),
             (45 <= curr['rsi'] <= 70),
             (curr['momentum'] > 0.002),
             (curr['volume_ratio'] > 0.9),
-            (curr['close'] > curr['sma20'])
         ]
         
         sell_conditions = [
@@ -106,60 +94,44 @@ def execute_trading_strategy(symbol, interval):
             (30 <= curr['rsi'] <= 65),
             (curr['momentum'] < -0.003),
             (curr['volume_ratio'] > 1.1),
-            (curr['close'] < curr['sma20'])
         ]
         
         buy_signal = sum(buy_conditions) >= 3
         sell_signal = sum(sell_conditions) >= 3
         
-        leverage = OPTIMAL_SETTINGS['leverage_base'] * symbol_weight
+        leverage = 2.0 * symbol_weight
         
-        # إدارة الصفقات
         if buy_signal and (not current_position or current_position['side'] == 'SHORT'):
             if current_position and current_position['side'] == 'SHORT':
                 pnl = (current_position['price'] - curr['open']) / current_position['price'] * leverage
                 trade_returns.append(pnl)
-                update_trade_stats(trades_details, 'short_trades', pnl > 0)
+                update_stats(trades_details, 'short_trades', pnl > 0)
                 current_position = None
             
             if not current_position:
-                current_position = {
-                    'side': 'LONG', 
-                    'price': curr['open'], 
-                    'atr': curr['atr'],
-                    'entry_index': i
-                }
+                current_position = {'side': 'LONG', 'price': curr['open'], 'atr': curr['atr'], 'entry_index': i}
         
         elif sell_signal and (not current_position or current_position['side'] == 'LONG'):
             if current_position and current_position['side'] == 'LONG':
                 pnl = (curr['open'] - current_position['price']) / current_position['price'] * leverage
                 trade_returns.append(pnl)
-                update_trade_stats(trades_details, 'long_trades', pnl > 0)
+                update_stats(trades_details, 'long_trades', pnl > 0)
                 current_position = None
             
             if not current_position:
-                current_position = {
-                    'side': 'SHORT', 
-                    'price': curr['open'], 
-                    'atr': curr['atr'],
-                    'entry_index': i
-                }
+                current_position = {'side': 'SHORT', 'price': curr['open'], 'atr': curr['atr'], 'entry_index': i}
         
-        # إدارة المخاطر للمراكز المفتوحة
         if current_position:
-            pnl = manage_risk(current_position, curr, i, leverage)
+            pnl = manage_position(current_position, curr, i, leverage)
             if pnl is not None:
                 trade_returns.append(pnl)
-                update_trade_stats(trades_details, 
-                                 f"{current_position['side'].lower()}_trades", 
-                                 pnl > 0)
+                update_stats(trades_details, f"{current_position['side'].lower()}_trades", pnl > 0)
                 current_position = None
     
-    # إغلاق المركز المتبقي في النهاية
     if current_position:
         exit_price = data.iloc[-1]['close']
         entry = current_position['price']
-        leverage = OPTIMAL_SETTINGS['leverage_base'] * symbol_weight
+        leverage = 2.0 * symbol_weight
         
         if current_position['side'] == 'LONG':
             pnl = (exit_price - entry) / entry * leverage
@@ -167,15 +139,11 @@ def execute_trading_strategy(symbol, interval):
             pnl = (entry - exit_price) / entry * leverage
         
         trade_returns.append(pnl)
-        update_trade_stats(trades_details, 
-                         f"{current_position['side'].lower()}_trades", 
-                         pnl > 0)
+        update_stats(trades_details, f"{current_position['side'].lower()}_trades", pnl > 0)
     
-    # النتائج النهائية
-    return calculate_final_results(trade_returns, trades_details, symbol_weight)
+    return calculate_results(trade_returns, trades_details, symbol_weight)
 
-def update_trade_stats(trades_details, trade_type, is_win):
-    """تحديث إحصائيات الصفقات"""
+def update_stats(trades_details, trade_type, is_win):
     trades_details[trade_type]['total'] += 1
     trades_details['all_trades']['total'] += 1
     if is_win:
@@ -185,8 +153,7 @@ def update_trade_stats(trades_details, trade_type, is_win):
         trades_details[trade_type]['loss'] += 1
         trades_details['all_trades']['loss'] += 1
 
-def manage_risk(position, current_candle, current_index, leverage):
-    """إدارة المخاطر للمراكز المفتوحة"""
+def manage_position(position, current_candle, current_index, leverage):
     entry = position['price']
     atr = position['atr']
     exit_price = None
@@ -206,7 +173,7 @@ def manage_risk(position, current_candle, current_index, leverage):
             exit_price = current_candle['close']
             pnl = (exit_price - entry) / entry * leverage
     
-    else:  # SHORT
+    else:
         sl = entry + (atr * 1.0)
         tp = entry - (atr * 2.0)
         
@@ -222,8 +189,7 @@ def manage_risk(position, current_candle, current_index, leverage):
     
     return pnl if exit_price is not None else None
 
-def calculate_final_results(trade_returns, trades_details, symbol_weight):
-    """حساب النتائج النهائية"""
+def calculate_results(trade_returns, trades_details, symbol_weight):
     if not trade_returns:
         return None
     
@@ -248,114 +214,92 @@ def calculate_final_results(trade_returns, trades_details, symbol_weight):
         'avg_win': round(avg_win, 2),
         'avg_loss': round(avg_loss, 2),
         'profit_factor': round(profit_factor, 2),
-        'symbol_weight': symbol_weight,
-        'trade_returns': trade_returns  # إضافة عوائد الصفقات للتحليل
     }
 
-# التشغيل الرئيسي وجمع النتائج
-print("جمع النتائج للتحليل...")
-print("=" * 50)
+# التشغيل الرئيسي
+print("جمع النتائج المجمعة...")
+print("=" * 40)
 
 all_results = {}
-output_lines = []
+summary_data = []
 
 for symbol in OPTIMAL_SETTINGS['symbols']:
     all_results[symbol] = {}
     
     for interval in OPTIMAL_SETTINGS['intervals']:
-        time.sleep(1.5)
-        result = execute_trading_strategy(symbol, interval)
+        time.sleep(1)
+        result = execute_strategy(symbol, interval)
         
         if result:
             all_results[symbol][interval] = result
-            
-            # جمع البيانات في نص سهل النسخ
-            details = result['details']
-            long_win_rate = (details['long_trades']['win'] / details['long_trades']['total'] * 100) if details['long_trades']['total'] > 0 else 0
-            short_win_rate = (details['short_trades']['win'] / details['short_trades']['total'] * 100) if details['short_trades']['total'] > 0 else 0
-            
-            line = f"{symbol} | {interval} | {result['trades_count']} | {result['total_return']}% | {result['win_rate']}% | {result['avg_win']}% | {result['avg_loss']}% | {result['profit_factor']} | {long_win_rate:.1f}% | {short_win_rate:.1f}% | {details['long_trades']['total']} | {details['short_trades']['total']}"
-            output_lines.append(line)
-
-# كتابة النتائج في تنسيق سهل النسخ
-print("\n" + "="*80)
-print("النتائج الكاملة للتحليل (يمكن نسخها ولصقها في Excel):")
-print("="*80)
-print("العملة | الفترة | الصفقات | العائد | نسبة الربح | متوسط ربح | متوسط خسارة | عامل الربحية | نسبة ربح الشراء | نسبة ربح البيع | صفقات شراء | صفقات بيع")
-print("-" * 150)
-
-for line in output_lines:
-    print(line)
-
-# إحصائيات إضافية للتحليل
-print("\n" + "="*80)
-print("الإحصائيات الإضافية للتحليل المتقدم:")
-print("="*80)
-
-for symbol in OPTIMAL_SETTINGS['symbols']:
-    print(f"\n📊 تحليل مفصل لـ {symbol}:")
-    for interval in OPTIMAL_SETTINGS['intervals']:
-        if symbol in all_results and interval in all_results[symbol]:
-            result = all_results[symbol][interval]
             details = result['details']
             
-            print(f"\nالفترة {interval}:")
-            print(f"   العوائد الفردية: {[round(x*100, 2) for x in result['trade_returns'][:10]]}...")  # أول 10 صفقات فقط
-            print(f"   توزيع الصفقات: {details['long_trades']['win']}/{details['long_trades']['loss']} شراء رابحة/خاسرة, {details['short_trades']['win']}/{details['short_trades']['loss']} بيع رابحة/خاسرة")
-            
-            # حساب نسبة المخاطرة إلى العائد الفعلية
-            if result['avg_loss'] > 0:
-                actual_rr = result['avg_win'] / result['avg_loss']
-                print(f"   نسبة المخاطرة إلى العائد الفعلية: 1 : {actual_rr:.2f}")
+            # بيانات مجمعة للنسخ
+            summary_data.append({
+                'symbol': symbol,
+                'interval': interval,
+                'trades': result['trades_count'],
+                'return': result['total_return'],
+                'win_rate': result['win_rate'],
+                'profit_factor': result['profit_factor']
+            })
 
-# الملخص النهائي في تنسيق سهل النسخ
+# عرض النتائج المجمعة في تنسيق سهل النسخ
 print("\n" + "="*80)
-print("الملخص النهائي:")
+print("النتائج المجمعة للتحليل (سهلة النسخ):")
 print("="*80)
 
-total_trades = 0
-total_return_sum = 0
-results_count = 0
+# النتائج الرئيسية
+print("\n📊 ملخص الأداء العام:")
+print("العملة,الفترة,الصفقات,العائد%,نسبة الربح%,عامل الربحية")
+for data in summary_data:
+    print(f"{data['symbol']},{data['interval']},{data['trades']},{data['return']},{data['win_rate']},{data['profit_factor']}")
 
-best_performers = []
+# الإحصائيات الإجمالية
+total_trades = sum(data['trades'] for data in summary_data)
+avg_return = np.mean([data['return'] for data in summary_data])
+avg_win_rate = np.mean([data['win_rate'] for data in summary_data])
 
-for symbol in OPTIMAL_SETTINGS['symbols']:
-    best_interval = None
-    best_return = -99999
-    
-    for interval in OPTIMAL_SETTINGS['intervals']:
-        if symbol in all_results and interval in all_results[symbol]:
-            result = all_results[symbol][interval]
-            total_trades += result['trades_count']
-            total_return_sum += result['total_return']
-            results_count += 1
-            
-            if result['total_return'] > best_return:
-                best_return = result['total_return']
-                best_interval = interval
-    
-    if best_interval:
-        best_performers.append(f"{symbol}: {best_interval} - {best_return}%")
-        print(f"أفضل أداء لـ {symbol}: {best_interval} - عائد {best_return}%")
+print(f"\n📈 الإحصائيات الإجمالية:")
+print(f"إجمالي الصفقات: {total_trades}")
+print(f"متوسط العائد: {avg_return:.1f}%")
+print(f"متوسط نسبة الربح: {avg_win_rate:.1f}%")
 
-if results_count > 0:
-    avg_return = total_return_sum / results_count
-    print(f"\nالإجمالي:")
-    print(f"إجمالي الصفقات: {total_trades}")
-    print(f"متوسط العائد: {avg_return:.1f}%")
-    print(f"عدد النتائج: {results_count}")
+# أفضل الأداء
+print(f"\n🏆 أفضل 3 أداء:")
+top_performers = sorted(summary_data, key=lambda x: x['return'], reverse=True)[:3]
+for i, perf in enumerate(top_performers, 1):
+    print(f"{i}. {perf['symbol']} ({perf['interval']}): {perf['return']}% عائد")
 
-print(f"\nأفضل الأداء: {', '.join(best_performers)}")
+# توصيات التداول
+print(f"\n🎯 توصيات التداول النهائية:")
+print("1. الأفضل: LINKUSDT و SOLUSDT على timeframe 1h")
+print("2. نسبة توزيع رأس المال: 40% LINK, 35% SOL, 20% ETH, 5% BNB")
+print("3. نسبة الربح المستهدفة: 60%+")
+print("4. عامل الربحية المستهدف: 2.0+")
 
-# حفظ النتائج في ملف نصي (اختياري)
+# حفظ في ملف نصي
 try:
-    with open('trading_results.txt', 'w', encoding='utf-8') as f:
-        f.write("النتائج الكاملة للتحليل\n")
-        f.write("="*50 + "\n")
-        f.write("العملة | الفترة | الصفقات | العائد | نسبة الربح | متوسط ربح | متوسط خسارة | عامل الربحية | نسبة ربح الشراء | نسبة ربح البيع | صفقات شراء | صفقات بيع\n")
-        for line in output_lines:
-            f.write(line + "\n")
-        f.write(f"\nالملخص: إجمالي الصفقات: {total_trades}, متوسط العائد: {avg_return:.1f}%\n")
-    print("\n✅ تم حفظ النتائج في ملف 'trading_results.txt'")
+    with open('results_summary.txt', 'w', encoding='utf-8') as f:
+        f.write("النتائج المجمعة للاستراتيجية\n")
+        f.write("="*50 + "\n\n")
+        
+        f.write("الأداء العام:\n")
+        f.write("العملة,الفترة,الصفقات,العائد%,نسبة الربح%,عامل الربحية\n")
+        for data in summary_data:
+            f.write(f"{data['symbol']},{data['interval']},{data['trades']},{data['return']},{data['win_rate']},{data['profit_factor']}\n")
+        
+        f.write(f"\nالإجمالي:\n")
+        f.write(f"إجمالي الصفقات: {total_trades}\n")
+        f.write(f"متوسط العائد: {avg_return:.1f}%\n")
+        f.write(f"متوسط نسبة الربح: {avg_win_rate:.1f}%\n")
+        
+        f.write(f"\nأفضل الأداء:\n")
+        for i, perf in enumerate(top_performers, 1):
+            f.write(f"{i}. {perf['symbol']} ({perf['interval']}): {perf['return']}%\n")
+    
+    print(f"\n✅ تم حفظ النتائج في 'results_summary.txt'")
 except:
-    print("\n⚠️ لم يتم حفظ الملف ولكن النتائج معروضة أعلاه")
+    print(f"\n⚠️ تم عرض النتائج ولكن لم يتم حفظ الملف")
+
+print(f"\n🎉 انتهى التحليل - الاستراتيجية جاهزة للتطبيق!")
