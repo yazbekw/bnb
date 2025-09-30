@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # Symbols and intervals
-symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "LINKUSDT", "AVAXUSDT"]
+symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "LINKUSDT", "AVAXUSDT", "MATICUSDT"]
 intervals = ['30m']
 
 # Date range (last month)
@@ -24,7 +24,8 @@ rsi_sell_threshold = 40
 atr_period = 14
 atr_multiplier_sl = 1.5
 atr_multiplier_tp = 3.0
-leverage = 3.0
+max_leverage = 5.0
+min_leverage = 1.0
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -95,24 +96,27 @@ def backtest(symbol, interval):
         
         if buy_signal:
             buy_signals += 1
+            leverage = min(max_leverage, max(min_leverage, 5.0 / (curr['atr'] / curr['open'])))
             if current_position and current_position['side'] == 'SHORT':
                 exit_price = curr['open']
-                pnl = (current_position['entry_price'] - exit_price) / current_position['entry_price'] * leverage
+                pnl = (current_position['entry_price'] - exit_price) / current_position['entry_price'] * current_position['leverage']
                 positions.append(pnl)
             if not current_position:
-                current_position = {'side': 'LONG', 'entry_price': curr['open'], 'atr': curr['atr']}
+                current_position = {'side': 'LONG', 'entry_price': curr['open'], 'atr': curr['atr'], 'leverage': leverage}
         
         if sell_signal:
             sell_signals += 1
+            leverage = min(max_leverage, max(min_leverage, 5.0 / (curr['atr'] / curr['open'])))
             if current_position and current_position['side'] == 'LONG':
                 exit_price = curr['open']
-                pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] * leverage
+                pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] * current_position['leverage']
                 positions.append(pnl)
             if not current_position:
-                current_position = {'side': 'SHORT', 'entry_price': curr['open'], 'atr': curr['atr']}
+                current_position = {'side': 'SHORT', 'entry_price': curr['open'], 'atr': curr['atr'], 'leverage': leverage}
         
         if current_position:
             atr = current_position['atr']
+            leverage = current_position['leverage']
             if current_position['side'] == 'LONG':
                 sl = current_position['entry_price'] - (atr * atr_multiplier_sl)
                 tp = current_position['entry_price'] + (atr * atr_multiplier_tp)
@@ -138,6 +142,7 @@ def backtest(symbol, interval):
     
     if current_position:
         exit_price = data.iloc[-1]['close']
+        leverage = current_position['leverage']
         pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] if current_position['side'] == 'LONG' else (current_position['entry_price'] - exit_price) / current_position['entry_price']
         pnl *= leverage
         positions.append(pnl)
