@@ -198,9 +198,7 @@ class FuturesTradingBot:
     
     # تخصيص رأس المال (50 دولار)
     TOTAL_CAPITAL = 50
-    WEIGHT_SUM = sum(OPTIMAL_SETTINGS['weights'].values())
-    CAPITAL_ALLOCATION = {symbol: (weight / WEIGHT_SUM) * TOTAL_CAPITAL for symbol, weight in OPTIMAL_SETTINGS['weights'].items()}
-
+    
     TRADING_SETTINGS = {
         'base_trade_size': 10,
         'max_leverage': 10,
