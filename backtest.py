@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # Symbols and intervals
-symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "LINKUSDT", "AVAXUSDT", "MATICUSDT"]
+symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "LINKUSDT", "AVAXUSDT", "DOTUSDT"]
 intervals = ['30m']
 
 # Date range (last month)
@@ -22,6 +22,7 @@ sma_long = 200
 rsi_buy_threshold = 60
 rsi_sell_threshold = 40
 atr_period = 14
+volume_period = 14
 atr_multiplier_sl = 1.5
 atr_multiplier_tp = 3.0
 max_leverage = 5.0
@@ -48,7 +49,7 @@ def get_historical_data(symbol, interval, start_ts, end_ts):
             'taker_buy_quote', 'ignore'
         ])
         data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
-        data[['open', 'high', 'low', 'close']] = data[['open', 'high', 'low', 'close']].astype(float)
+        data[['open', 'high', 'low', 'close', 'volume']] = data[['open', 'high', 'low', 'close', 'volume']].astype(float)
         return data
     except Exception as e:
         print(f"Error fetching {symbol} {interval}: {e}")
@@ -71,6 +72,8 @@ def calculate_indicators(df):
     }).max(axis=1)
     df['atr'] = tr.rolling(atr_period).mean()
     
+    df['volume_sma'] = df['volume'].rolling(window=volume_period).mean()
+    
     return df.dropna().reset_index(drop=True)
 
 def backtest(symbol, interval):
@@ -90,9 +93,9 @@ def backtest(symbol, interval):
         curr = data.iloc[i]
         
         buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and \
-                     (curr['rsi'] > rsi_buy_threshold)
+                     (curr['rsi'] > rsi_buy_threshold) and (curr['volume'] > curr['volume_sma'])
         sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and \
-                      (curr['rsi'] < rsi_sell_threshold)
+                      (curr['rsi'] < rsi_sell_threshold) and (curr['volume'] > curr['volume_sma'])
         
         if buy_signal:
             buy_signals += 1
