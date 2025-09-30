@@ -23,8 +23,8 @@ rsi_buy_threshold = 60
 rsi_sell_threshold = 40
 atr_period = 14
 atr_multiplier_sl = 1.5
-trail_trigger_multiplier = 1.0  # Start trailing after profit of 1x ATR
-trail_offset_multiplier = 1.0  # Trailing stop offset of 1x ATR
+atr_multiplier_tp = 3.0
+leverage = 3.0  # Leverage of 3x
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -97,76 +97,49 @@ def backtest(symbol, interval):
             buy_signals += 1
             if current_position and current_position['side'] == 'SHORT':
                 exit_price = curr['open']
-                pnl = (current_position['entry_price'] - exit_price) / current_position['entry_price']
+                pnl = (current_position['entry_price'] - exit_price) / current_position['entry_price'] * leverage
                 positions.append(pnl)
             if not current_position:
-                current_position = {
-                    'side': 'LONG',
-                    'entry_price': curr['open'],
-                    'atr': curr['atr'],
-                    'highest_price': curr['open'],
-                    'trail_started': False,
-                    'trail_price': 0
-                }
+                current_position = {'side': 'LONG', 'entry_price': curr['open'], 'atr': curr['atr']}
         
         if sell_signal:
             sell_signals += 1
             if current_position and current_position['side'] == 'LONG':
                 exit_price = curr['open']
-                pnl = (exit_price - current_position['entry_price']) / current_position['entry_price']
+                pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] * leverage
                 positions.append(pnl)
             if not current_position:
-                current_position = {
-                    'side': 'SHORT',
-                    'entry_price': curr['open'],
-                    'atr': curr['atr'],
-                    'lowest_price': curr['open'],
-                    'trail_started': False,
-                    'trail_price': 0
-                }
+                current_position = {'side': 'SHORT', 'entry_price': curr['open'], 'atr': curr['atr']}
         
         if current_position:
             atr = current_position['atr']
             if current_position['side'] == 'LONG':
-                pnl = (curr['close'] - current_position['entry_price']) / current_position['entry_price']
-                if pnl > trail_trigger_multiplier * (atr / current_position['entry_price']):
-                    current_position['trail_started'] = True
-                if current_position['trail_started']:
-                    new_trail = curr['close'] - (atr * trail_offset_multiplier)
-                    if new_trail > current_position['trail_price']:
-                        current_position['trail_price'] = new_trail
-                    if curr['low'] <= current_position['trail_price']:
-                        pnl = (current_position['trail_price'] - current_position['entry_price']) / current_position['entry_price']
-                        positions.append(pnl)
-                        current_position = None
-                        continue
                 sl = current_position['entry_price'] - (atr * atr_multiplier_sl)
+                tp = current_position['entry_price'] + (atr * atr_multiplier_tp)
                 if curr['low'] <= sl:
-                    pnl = (sl - current_position['entry_price']) / current_position['entry_price']
+                    pnl = (sl - current_position['entry_price']) / current_position['entry_price'] * leverage
+                    positions.append(pnl)
+                    current_position = None
+                elif curr['high'] >= tp:
+                    pnl = (tp - current_position['entry_price']) / current_position['entry_price'] * leverage
                     positions.append(pnl)
                     current_position = None
             else:
-                pnl = (current_position['entry_price'] - curr['close']) / current_position['entry_price']
-                if pnl > trail_trigger_multiplier * (atr / current_position['entry_price']):
-                    current_position['trail_started'] = True
-                if current_position['trail_started']:
-                    new_trail = curr['close'] + (atr * trail_offset_multiplier)
-                    if new_trail < current_position['trail_price'] or current_position['trail_price'] == 0:
-                        current_position['trail_price'] = new_trail
-                    if curr['high'] >= current_position['trail_price']:
-                        pnl = (current_position['entry_price'] - current_position['trail_price']) / current_position['entry_price']
-                        positions.append(pnl)
-                        current_position = None
-                        continue
                 sl = current_position['entry_price'] + (atr * atr_multiplier_sl)
+                tp = current_position['entry_price'] - (atr * atr_multiplier_tp)
                 if curr['high'] >= sl:
-                    pnl = (current_position['entry_price'] - sl) / current_position['entry_price']
+                    pnl = (current_position['entry_price'] - sl) / current_position['entry_price'] * leverage
+                    positions.append(pnl)
+                    current_position = None
+                elif curr['low'] <= tp:
+                    pnl = (current_position['entry_price'] - tp) / current_position['entry_price'] * leverage
                     positions.append(pnl)
                     current_position = None
     
     if current_position:
         exit_price = data.iloc[-1]['close']
         pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] if current_position['side'] == 'LONG' else (current_position['entry_price'] - exit_price) / current_position['entry_price']
+        pnl *= leverage
         positions.append(pnl)
     
     cum_return = (np.prod([1 + p for p in positions]) - 1) * 100 if positions else 0.0
