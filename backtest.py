@@ -7,7 +7,7 @@ import pytz
 
 # Symbols and intervals
 symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
-intervals = ['15m', '30m', '1h']
+intervals = ['30m']  # Focus on 30m only
 
 # Date range (last month)
 end_date = datetime.now(pytz.UTC)
@@ -96,7 +96,6 @@ def backtest(symbol, interval):
         prev = data.iloc[i-1]
         curr = data.iloc[i]
         
-        # Detect signals with MACD confirmation
         buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and \
                      (curr['rsi'] > rsi_buy_threshold) and (curr['macd_line'] > curr['signal_line'])
         sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and \
