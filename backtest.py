@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # Symbols and intervals
-symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "LINKUSDT", "AVAXUSDT", "DOTUSDT"]
+symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "LINKUSDT", "AVAXUSDT", "ARBUSDT"]
 intervals = ['30m']
 
 # Date range (last month)
@@ -22,7 +22,6 @@ sma_long = 200
 rsi_buy_threshold = 60
 rsi_sell_threshold = 40
 atr_period = 14
-volume_period = 14
 atr_multiplier_sl = 1.5
 atr_multiplier_tp = 3.0
 max_leverage = 5.0
@@ -72,7 +71,12 @@ def calculate_indicators(df):
     }).max(axis=1)
     df['atr'] = tr.rolling(atr_period).mean()
     
-    df['volume_sma'] = df['volume'].rolling(window=volume_period).mean()
+    # Calculate VWAP
+    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+    df['price_volume'] = df['typical_price'] * df['volume']
+    df['cum_price_volume'] = df['price_volume'].cumsum()
+    df['cum_volume'] = df['volume'].cumsum()
+    df['vwap'] = df['cum_price_volume'] / df['cum_volume']
     
     return df.dropna().reset_index(drop=True)
 
@@ -93,9 +97,9 @@ def backtest(symbol, interval):
         curr = data.iloc[i]
         
         buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and \
-                     (curr['rsi'] > rsi_buy_threshold) and (curr['volume'] > curr['volume_sma'])
+                     (curr['rsi'] > rsi_buy_threshold) and (curr['close'] > curr['vwap'])
         sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and \
-                      (curr['rsi'] < rsi_sell_threshold) and (curr['volume'] > curr['volume_sma'])
+                      (curr['rsi'] < rsi_sell_threshold) and (curr['close'] < curr['vwap'])
         
         if buy_signal:
             buy_signals += 1
