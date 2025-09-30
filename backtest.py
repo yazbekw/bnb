@@ -24,8 +24,11 @@ rsi_sell_threshold = 40
 atr_period = 14
 atr_multiplier_sl = 1.5
 atr_multiplier_tp = 3.0
-bb_period = 20
-bb_std = 2.0  # Standard deviation for Bollinger Bands
+stoch_period = 14
+stoch_k = 3
+stoch_d = 3
+stoch_buy_threshold = 20
+stoch_sell_threshold = 80
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -71,11 +74,11 @@ def calculate_indicators(df):
     }).max(axis=1)
     df['atr'] = tr.rolling(atr_period).mean()
     
-    # Calculate Bollinger Bands
-    df['bb_mid'] = df['close'].rolling(window=bb_period).mean()
-    df['bb_std'] = df['close'].rolling(window=bb_period).std()
-    df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * bb_std)
-    df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * bb_std)
+    # Calculate Stochastic Oscillator
+    lowest_low = df['low'].rolling(window=stoch_period).min()
+    highest_high = df['high'].rolling(window=stoch_period).max()
+    df['stoch_k'] = 100 * (df['close'] - lowest_low) / (highest_high - lowest_low + 1e-10)
+    df['stoch_d'] = df['stoch_k'].rolling(window=stoch_d).mean()
     
     return df.dropna().reset_index(drop=True)
 
@@ -96,9 +99,9 @@ def backtest(symbol, interval):
         curr = data.iloc[i]
         
         buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and \
-                     (curr['rsi'] > rsi_buy_threshold) and (curr['close'] < curr['bb_lower'])
+                     (curr['rsi'] > rsi_buy_threshold) and (curr['stoch_k'] < stoch_buy_threshold)
         sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and \
-                      (curr['rsi'] < rsi_sell_threshold) and (curr['close'] > curr['bb_upper'])
+                      (curr['rsi'] < rsi_sell_threshold) and (curr['stoch_k'] > stoch_sell_threshold)
         
         if buy_signal:
             buy_signals += 1
