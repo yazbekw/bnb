@@ -19,11 +19,11 @@ end_ts = int(end_date.timestamp() * 1000)
 rsi_period = 14
 sma_short = 50
 sma_long = 200
-rsi_buy_threshold = 60  # Modified for Plan 1
-rsi_sell_threshold = 40  # Added for Plan 1
+rsi_buy_threshold = 60
+rsi_sell_threshold = 40
 atr_period = 14
-atr_multiplier_sl = 1.5
-atr_multiplier_tp = 3.0
+atr_multiplier_sl = 1.0  # Modified for Plan 2
+atr_multiplier_tp = 2.0  # Modified for Plan 2
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -87,7 +87,6 @@ def backtest(symbol, interval):
         prev = data.iloc[i-1]
         curr = data.iloc[i]
         
-        # Detect signals with modified RSI thresholds
         buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and (curr['rsi'] > rsi_buy_threshold)
         sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and (curr['rsi'] < rsi_sell_threshold)
         
@@ -109,7 +108,6 @@ def backtest(symbol, interval):
             if not current_position:
                 current_position = {'side': 'SHORT', 'entry_price': curr['open'], 'atr': curr['atr']}
         
-        # Check SL/TP
         if current_position:
             atr = current_position['atr']
             if current_position['side'] == 'LONG':
@@ -135,7 +133,6 @@ def backtest(symbol, interval):
                     positions.append(pnl)
                     current_position = None
     
-    # Close open position at end
     if current_position:
         exit_price = data.iloc[-1]['close']
         pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] if current_position['side'] == 'LONG' else (current_position['entry_price'] - exit_price) / current_position['entry_price']
