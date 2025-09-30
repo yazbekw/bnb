@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # Symbols and intervals
-symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]
+symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "LINKUSDT", "AVAXUSDT"]
 intervals = ['30m']
 
 # Date range (last month)
@@ -24,7 +24,7 @@ rsi_sell_threshold = 40
 atr_period = 14
 atr_multiplier_sl = 1.5
 atr_multiplier_tp = 3.0
-leverage = 3.0  # Leverage of 3x
+leverage = 3.0
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
