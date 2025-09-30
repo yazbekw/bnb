@@ -23,12 +23,8 @@ rsi_buy_threshold = 60
 rsi_sell_threshold = 40
 atr_period = 14
 atr_multiplier_sl = 1.5
-atr_multiplier_tp = 3.0
-stoch_period = 14
-stoch_k = 3
-stoch_d = 3
-stoch_buy_threshold = 20
-stoch_sell_threshold = 80
+trail_trigger_multiplier = 1.0  # Start trailing after profit of 1x ATR
+trail_offset_multiplier = 1.0  # Trailing stop offset of 1x ATR
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -74,12 +70,6 @@ def calculate_indicators(df):
     }).max(axis=1)
     df['atr'] = tr.rolling(atr_period).mean()
     
-    # Calculate Stochastic Oscillator
-    lowest_low = df['low'].rolling(window=stoch_period).min()
-    highest_high = df['high'].rolling(window=stoch_period).max()
-    df['stoch_k'] = 100 * (df['close'] - lowest_low) / (highest_high - lowest_low + 1e-10)
-    df['stoch_d'] = df['stoch_k'].rolling(window=stoch_d).mean()
-    
     return df.dropna().reset_index(drop=True)
 
 def backtest(symbol, interval):
@@ -99,9 +89,9 @@ def backtest(symbol, interval):
         curr = data.iloc[i]
         
         buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and \
-                     (curr['rsi'] > rsi_buy_threshold) and (curr['stoch_k'] < stoch_buy_threshold)
+                     (curr['rsi'] > rsi_buy_threshold)
         sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and \
-                      (curr['rsi'] < rsi_sell_threshold) and (curr['stoch_k'] > stoch_sell_threshold)
+                      (curr['rsi'] < rsi_sell_threshold)
         
         if buy_signal:
             buy_signals += 1
@@ -110,7 +100,14 @@ def backtest(symbol, interval):
                 pnl = (current_position['entry_price'] - exit_price) / current_position['entry_price']
                 positions.append(pnl)
             if not current_position:
-                current_position = {'side': 'LONG', 'entry_price': curr['open'], 'atr': curr['atr']}
+                current_position = {
+                    'side': 'LONG',
+                    'entry_price': curr['open'],
+                    'atr': curr['atr'],
+                    'highest_price': curr['open'],
+                    'trail_started': False,
+                    'trail_price': 0
+                }
         
         if sell_signal:
             sell_signals += 1
@@ -119,30 +116,51 @@ def backtest(symbol, interval):
                 pnl = (exit_price - current_position['entry_price']) / current_position['entry_price']
                 positions.append(pnl)
             if not current_position:
-                current_position = {'side': 'SHORT', 'entry_price': curr['open'], 'atr': curr['atr']}
+                current_position = {
+                    'side': 'SHORT',
+                    'entry_price': curr['open'],
+                    'atr': curr['atr'],
+                    'lowest_price': curr['open'],
+                    'trail_started': False,
+                    'trail_price': 0
+                }
         
         if current_position:
             atr = current_position['atr']
             if current_position['side'] == 'LONG':
+                pnl = (curr['close'] - current_position['entry_price']) / current_position['entry_price']
+                if pnl > trail_trigger_multiplier * (atr / current_position['entry_price']):
+                    current_position['trail_started'] = True
+                if current_position['trail_started']:
+                    new_trail = curr['close'] - (atr * trail_offset_multiplier)
+                    if new_trail > current_position['trail_price']:
+                        current_position['trail_price'] = new_trail
+                    if curr['low'] <= current_position['trail_price']:
+                        pnl = (current_position['trail_price'] - current_position['entry_price']) / current_position['entry_price']
+                        positions.append(pnl)
+                        current_position = None
+                        continue
                 sl = current_position['entry_price'] - (atr * atr_multiplier_sl)
-                tp = current_position['entry_price'] + (atr * atr_multiplier_tp)
                 if curr['low'] <= sl:
                     pnl = (sl - current_position['entry_price']) / current_position['entry_price']
                     positions.append(pnl)
                     current_position = None
-                elif curr['high'] >= tp:
-                    pnl = (tp - current_position['entry_price']) / current_position['entry_price']
-                    positions.append(pnl)
-                    current_position = None
             else:
+                pnl = (current_position['entry_price'] - curr['close']) / current_position['entry_price']
+                if pnl > trail_trigger_multiplier * (atr / current_position['entry_price']):
+                    current_position['trail_started'] = True
+                if current_position['trail_started']:
+                    new_trail = curr['close'] + (atr * trail_offset_multiplier)
+                    if new_trail < current_position['trail_price'] or current_position['trail_price'] == 0:
+                        current_position['trail_price'] = new_trail
+                    if curr['high'] >= current_position['trail_price']:
+                        pnl = (current_position['entry_price'] - current_position['trail_price']) / current_position['entry_price']
+                        positions.append(pnl)
+                        current_position = None
+                        continue
                 sl = current_position['entry_price'] + (atr * atr_multiplier_sl)
-                tp = current_position['entry_price'] - (atr * atr_multiplier_tp)
                 if curr['high'] >= sl:
                     pnl = (current_position['entry_price'] - sl) / current_position['entry_price']
-                    positions.append(pnl)
-                    current_position = None
-                elif curr['low'] <= tp:
-                    pnl = (current_position['entry_price'] - tp) / current_position['entry_price']
                     positions.append(pnl)
                     current_position = None
     
