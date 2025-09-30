@@ -831,8 +831,8 @@ class FuturesTradingBot:
         logger.info("🚀 بدء تشغيل بوت العقود الآجلة...")
         
         schedule.every(self.TRADING_SETTINGS['rescan_interval_minutes']).minutes.do(self.scan_market)
-        schedule.every(2).minutes.do(self.manage_trades)
-        schedule.every(5).minutes.do(self.update_active_trades)
+        schedule.every(5).minutes.do(self.manage_trades)
+        schedule.every(10).minutes.do(self.update_active_trades)
         
         while True:
             try:
