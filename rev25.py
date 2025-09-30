@@ -304,15 +304,14 @@ class FuturesTradingBot:
                 )
             raise
 
-        self.symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"]  # Updated symbols
+        self.symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "LINKUSDT"]  # Updated symbols
         self.verify_symbols_availability()
     
         self.symbol_settings = {
             "SOLUSDT": {'stop_loss_pct': 2.5, 'take_profit_pct': 6.0},
             "ETHUSDT": {'stop_loss_pct': 3.0, 'take_profit_pct': 7.5},
             "BNBUSDT": {'stop_loss_pct': 2.5, 'take_profit_pct': 6.0},
-            "XRPUSDT": {'stop_loss_pct': 2.0, 'take_profit_pct': 5.0},
-            "ADAUSDT": {'stop_loss_pct': 3.0, 'take_profit_pct': 7.5},
+            "LINKUSDT": {'stop_loss_pct': 3.0, 'take_profit_pct': 7.5},
         }
     
         self.active_trades = {}
