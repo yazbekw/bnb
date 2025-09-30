@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # Symbols and intervals
-symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "LINKUSDT", "AVAXUSDT", "ARBUSDT"]
+symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "LINKUSDT"]
 intervals = ['30m']
 
 # Date range (last month)
@@ -24,7 +24,6 @@ rsi_sell_threshold = 40
 atr_period = 14
 atr_multiplier_sl = 1.5
 atr_multiplier_tp = 3.0
-trailing_stop_multiplier = 1.5
 max_leverage = 5.0
 min_leverage = 1.0
 
@@ -85,7 +84,6 @@ def backtest(symbol, interval):
     sell_signals = 0
     positions = []
     current_position = None
-    trailing_stop = None
     
     for i in range(1, len(data)):
         prev = data.iloc[i-1]
@@ -104,14 +102,7 @@ def backtest(symbol, interval):
                 pnl = (current_position['entry_price'] - exit_price) / current_position['entry_price'] * current_position['leverage']
                 positions.append(pnl)
             if not current_position:
-                current_position = {
-                    'side': 'LONG', 
-                    'entry_price': curr['open'], 
-                    'atr': curr['atr'], 
-                    'leverage': leverage,
-                    'highest_price': curr['open']
-                }
-                trailing_stop = curr['open'] - (curr['atr'] * trailing_stop_multiplier)
+                current_position = {'side': 'LONG', 'entry_price': curr['open'], 'atr': curr['atr'], 'leverage': leverage}
         
         if sell_signal:
             sell_signals += 1
@@ -121,50 +112,33 @@ def backtest(symbol, interval):
                 pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] * current_position['leverage']
                 positions.append(pnl)
             if not current_position:
-                current_position = {
-                    'side': 'SHORT', 
-                    'entry_price': curr['open'], 
-                    'atr': curr['atr'], 
-                    'leverage': leverage,
-                    'lowest_price': curr['open']
-                }
-                trailing_stop = curr['open'] + (curr['atr'] * trailing_stop_multiplier)
+                current_position = {'side': 'SHORT', 'entry_price': curr['open'], 'atr': curr['atr'], 'leverage': leverage}
         
         if current_position:
             atr = current_position['atr']
             leverage = current_position['leverage']
             if current_position['side'] == 'LONG':
-                # Update trailing stop
-                current_position['highest_price'] = max(current_position['highest_price'], curr['high'])
-                trailing_stop = max(trailing_stop, current_position['highest_price'] - (atr * trailing_stop_multiplier))
                 sl = current_position['entry_price'] - (atr * atr_multiplier_sl)
                 tp = current_position['entry_price'] + (atr * atr_multiplier_tp)
-                if curr['low'] <= trailing_stop:
-                    pnl = (trailing_stop - current_position['entry_price']) / current_position['entry_price'] * leverage
+                if curr['low'] <= sl:
+                    pnl = (sl - current_position['entry_price']) / current_position['entry_price'] * leverage
                     positions.append(pnl)
                     current_position = None
-                    trailing_stop = None
                 elif curr['high'] >= tp:
                     pnl = (tp - current_position['entry_price']) / current_position['entry_price'] * leverage
                     positions.append(pnl)
                     current_position = None
-                    trailing_stop = None
             else:
-                # Update trailing stop
-                current_position['lowest_price'] = min(current_position['lowest_price'], curr['low'])
-                trailing_stop = min(trailing_stop, current_position['lowest_price'] + (atr * trailing_stop_multiplier))
                 sl = current_position['entry_price'] + (atr * atr_multiplier_sl)
                 tp = current_position['entry_price'] - (atr * atr_multiplier_tp)
-                if curr['high'] >= trailing_stop:
-                    pnl = (current_position['entry_price'] - trailing_stop) / current_position['entry_price'] * leverage
+                if curr['high'] >= sl:
+                    pnl = (current_position['entry_price'] - sl) / current_position['entry_price'] * leverage
                     positions.append(pnl)
                     current_position = None
-                    trailing_stop = None
                 elif curr['low'] <= tp:
                     pnl = (current_position['entry_price'] - tp) / current_position['entry_price'] * leverage
                     positions.append(pnl)
                     current_position = None
-                    trailing_stop = None
     
     if current_position:
         exit_price = data.iloc[-1]['close']
