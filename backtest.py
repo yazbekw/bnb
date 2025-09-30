@@ -22,8 +22,10 @@ sma_long = 200
 rsi_buy_threshold = 60
 rsi_sell_threshold = 40
 atr_period = 14
-atr_multiplier_sl = 1.5  # Restored to original
-atr_multiplier_tp = 3.0  # Restored to original
+atr_multiplier_sl = 1.5
+atr_multiplier_tp = 3.0
+bb_period = 20
+bb_std = 2.0  # Standard deviation for Bollinger Bands
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -69,6 +71,12 @@ def calculate_indicators(df):
     }).max(axis=1)
     df['atr'] = tr.rolling(atr_period).mean()
     
+    # Calculate Bollinger Bands
+    df['bb_mid'] = df['close'].rolling(window=bb_period).mean()
+    df['bb_std'] = df['close'].rolling(window=bb_period).std()
+    df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * bb_std)
+    df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * bb_std)
+    
     return df.dropna().reset_index(drop=True)
 
 def backtest(symbol, interval):
@@ -88,9 +96,9 @@ def backtest(symbol, interval):
         curr = data.iloc[i]
         
         buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and \
-                     (curr['rsi'] > rsi_buy_threshold)
+                     (curr['rsi'] > rsi_buy_threshold) and (curr['close'] < curr['bb_lower'])
         sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and \
-                      (curr['rsi'] < rsi_sell_threshold)
+                      (curr['rsi'] < rsi_sell_threshold) and (curr['close'] > curr['bb_upper'])
         
         if buy_signal:
             buy_signals += 1
