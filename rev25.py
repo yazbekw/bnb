@@ -219,6 +219,12 @@ class FuturesTradingBot:
     def __init__(self):
         if FuturesTradingBot._instance is not None:
             raise Exception("هذه الفئة تستخدم نمط Singleton")
+
+        self.WEIGHT_SUM = sum(self.OPTIMAL_SETTINGS['weights'].values())
+        self.CAPITAL_ALLOCATION = {
+            symbol: (weight / self.WEIGHT_SUM) * self.TOTAL_CAPITAL 
+            for symbol, weight in self.OPTIMAL_SETTINGS['weights'].items()
+        }
         
         self.api_key = os.environ.get('BINANCE_API_KEY')
         self.api_secret = os.environ.get('BINANCE_API_SECRET')
