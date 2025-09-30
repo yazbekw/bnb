@@ -22,8 +22,11 @@ sma_long = 200
 rsi_buy_threshold = 60
 rsi_sell_threshold = 40
 atr_period = 14
-atr_multiplier_sl = 1.0  # Modified for Plan 2
-atr_multiplier_tp = 2.0  # Modified for Plan 2
+atr_multiplier_sl = 1.0
+atr_multiplier_tp = 2.0
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -69,6 +72,12 @@ def calculate_indicators(df):
     }).max(axis=1)
     df['atr'] = tr.rolling(atr_period).mean()
     
+    # Calculate MACD
+    ema_fast = df['close'].ewm(span=macd_fast, adjust=False).mean()
+    ema_slow = df['close'].ewm(span=macd_slow, adjust=False).mean()
+    df['macd_line'] = ema_fast - ema_slow
+    df['signal_line'] = df['macd_line'].ewm(span=macd_signal, adjust=False).mean()
+    
     return df.dropna().reset_index(drop=True)
 
 def backtest(symbol, interval):
@@ -87,8 +96,11 @@ def backtest(symbol, interval):
         prev = data.iloc[i-1]
         curr = data.iloc[i]
         
-        buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and (curr['rsi'] > rsi_buy_threshold)
-        sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and (curr['rsi'] < rsi_sell_threshold)
+        # Detect signals with MACD confirmation
+        buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and \
+                     (curr['rsi'] > rsi_buy_threshold) and (curr['macd_line'] > curr['signal_line'])
+        sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and \
+                      (curr['rsi'] < rsi_sell_threshold) and (curr['macd_line'] < curr['signal_line'])
         
         if buy_signal:
             buy_signals += 1
