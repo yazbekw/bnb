@@ -206,9 +206,9 @@ class FuturesTradingBot:
         'max_leverage': 10,
         'margin_type': 'ISOLATED',
         'max_active_trades': 4,
-        'data_interval': '1h',
-        'rescan_interval_minutes': 30,
-        'price_update_interval': 5,
+        'data_interval': '30m',
+        'rescan_interval_minutes': 15,
+        'price_update_interval': 10,
         'trade_timeout_hours': 4.0,
     }
 
