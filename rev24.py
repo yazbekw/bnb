@@ -243,8 +243,8 @@ class FuturesTradingBot:
         'rsi_oversold': 35,
         'rsi_buy_threshold': 50,  # Updated for strategy
         'rsi_sell_threshold': 75,
-        'data_interval': '1h',  # Updated to hourly for trend following
-        'rescan_interval_minutes': 30,  # Updated to 60 minutes for longer-term strategy
+        'data_interval': '15m',  # Updated to hourly for trend following
+        'rescan_interval_minutes': 15,  # Updated to 60 minutes for longer-term strategy
         'trade_timeout_hours': 4.0,  # Updated to 4 hours
         'extended_timeout_hours': 12.0,  # Updated to 12 hours
         'extended_take_profit_multiplier': 0.75,
