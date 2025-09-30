@@ -22,13 +22,8 @@ sma_long = 200
 rsi_buy_threshold = 60
 rsi_sell_threshold = 40
 atr_period = 14
-atr_multiplier_sl = 1.0
-atr_multiplier_tp = 2.0
-macd_fast = 12
-macd_slow = 26
-macd_signal = 9
-volume_period = 20
-volume_threshold = 1.2  # Volume must be 20% above 20-period average
+atr_multiplier_sl = 1.5  # Restored to original
+atr_multiplier_tp = 3.0  # Restored to original
 
 def get_historical_data(symbol, interval, start_ts, end_ts):
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -51,7 +46,7 @@ def get_historical_data(symbol, interval, start_ts, end_ts):
             'taker_buy_quote', 'ignore'
         ])
         data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
-        data[['open', 'high', 'low', 'close', 'volume']] = data[['open', 'high', 'low', 'close', 'volume']].astype(float)
+        data[['open', 'high', 'low', 'close']] = data[['open', 'high', 'low', 'close']].astype(float)
         return data
     except Exception as e:
         print(f"Error fetching {symbol} {interval}: {e}")
@@ -74,15 +69,6 @@ def calculate_indicators(df):
     }).max(axis=1)
     df['atr'] = tr.rolling(atr_period).mean()
     
-    # Calculate MACD
-    ema_fast = df['close'].ewm(span=macd_fast, adjust=False).mean()
-    ema_slow = df['close'].ewm(span=macd_slow, adjust=False).mean()
-    df['macd_line'] = ema_fast - ema_slow
-    df['signal_line'] = df['macd_line'].ewm(span=macd_signal, adjust=False).mean()
-    
-    # Calculate volume average
-    df['volume_avg'] = df['volume'].rolling(window=volume_period).mean()
-    
     return df.dropna().reset_index(drop=True)
 
 def backtest(symbol, interval):
@@ -101,15 +87,10 @@ def backtest(symbol, interval):
         prev = data.iloc[i-1]
         curr = data.iloc[i]
         
-        # Volume condition
-        volume_condition = curr['volume'] > (curr['volume_avg'] * volume_threshold)
-        
         buy_signal = (curr['sma50'] > curr['sma200']) and (prev['sma50'] <= prev['sma200']) and \
-                     (curr['rsi'] > rsi_buy_threshold) and (curr['macd_line'] > curr['signal_line']) and \
-                     volume_condition
+                     (curr['rsi'] > rsi_buy_threshold)
         sell_signal = (curr['sma50'] < curr['sma200']) and (prev['sma50'] >= prev['sma200']) and \
-                      (curr['rsi'] < rsi_sell_threshold) and (curr['macd_line'] < curr['signal_line']) and \
-                      volume_condition
+                      (curr['rsi'] < rsi_sell_threshold)
         
         if buy_signal:
             buy_signals += 1
