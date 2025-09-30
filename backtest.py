@@ -18,7 +18,7 @@ WEIGHT_SUM = sum(OPTIMAL_SETTINGS['weights'].values())
 CAPITAL_ALLOCATION = {symbol: (weight / WEIGHT_SUM) * TOTAL_CAPITAL for symbol, weight in OPTIMAL_SETTINGS['weights'].items()}
 
 def get_trading_data(symbol, interval, days=365):
-    end_date = datetime.now(pytz.UTC)
+    end_date = datetime.now(pytz.UTC)  # التاريخ الحالي (1 أكتوبر 2025)
     start_date = end_date - timedelta(days=days)
     start_ts = int(start_date.timestamp() * 1000)
     end_ts = int(end_date.timestamp() * 1000)
@@ -45,7 +45,7 @@ def get_trading_data(symbol, interval, days=365):
             df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
             all_data.append(df)
             start_ts = int(df['timestamp'].iloc[-1].timestamp() * 1000) + 1
-            time.sleep(0.1)
+            time.sleep(0.5)  # زيادة التأخير لتجنب قيود API
         except:
             break
     
@@ -117,6 +117,8 @@ def execute_strategy(symbol, interval):
         buy_signal = sum(buy_conditions) >= 3
         sell_signal = sum(sell_conditions) >= 3
         
+        leverage = min(5 / max(curr['atr'], 1e-10), 10) * symbol_weight  # رافعة ديناميكية
+        
         if buy_signal and (not current_position or current_position['side'] == 'SHORT'):
             if current_position and current_position['side'] == 'SHORT':
                 change = current_position['price'] - curr['open']
@@ -127,8 +129,7 @@ def execute_strategy(symbol, interval):
                 current_position = None
             
             if not current_position and balance > 0:
-                position_size = min(10, balance)
-                leverage = min(5 / max(curr['atr'], 1e-10), 10) * symbol_weight
+                position_size = min(10, balance)  # حجم الصفقة 10 دولار أو أقل
                 current_position = {'side': 'LONG', 'price': curr['open'], 'atr': curr['atr'], 'entry_index': i, 'leverage': leverage, 'position_size': position_size}
         
         elif sell_signal and (not current_position or current_position['side'] == 'LONG'):
@@ -141,8 +142,7 @@ def execute_strategy(symbol, interval):
                 current_position = None
             
             if not current_position and balance > 0:
-                position_size = min(10, balance)
-                leverage = min(5 / max(curr['atr'], 1e-10), 10) * symbol_weight
+                position_size = min(10, balance)  # حجم الصفقة 10 دولار أو أقل
                 current_position = {'side': 'SHORT', 'price': curr['open'], 'atr': curr['atr'], 'entry_index': i, 'leverage': leverage, 'position_size': position_size}
         
         if current_position:
@@ -230,7 +230,7 @@ def calculate_results(trade_returns, trades_details, symbol_weight, final_balanc
             'final_balance': round(final_balance, 2)
         }
     
-    total_return = sum(trade_returns) * 100
+    total_return = sum(trade_returns) * 100  # مجموع العوائد
     
     if trades_details['all_trades']['total'] > 0:
         win_rate = (trades_details['all_trades']['win'] / trades_details['all_trades']['total']) * 100
@@ -344,5 +344,3 @@ except:
     print(f"\n⚠️ تم عرض النتائج ولكن لم يتم حفظ الملف")
 
 print(f"\n🎉 انتهى التحليل - الاستراتيجية جاهزة للتطبيق!")
-</python> 
-
