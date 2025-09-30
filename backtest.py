@@ -4,9 +4,22 @@ import requests
 import json
 from datetime import datetime, timedelta
 import pytz
+import telegram
+import asyncio
+
+# Telegram Bot setup (replace with your bot token and chat ID)
+TELEGRAM_BOT_TOKEN = 'YOUR_BOT_TOKEN'  # Replace with your Telegram Bot Token
+TELEGRAM_CHAT_ID = 'YOUR_CHAT_ID'    # Replace with your Telegram Chat ID
+bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+
+async def send_telegram_message(message):
+    try:
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    except Exception as e:
+        print(f"Error sending Telegram message: {e}")
 
 # Symbols and intervals
-symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "LINKUSDT", "XRPUSDT", "INJUSDT"]
+symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "LINKUSDT", "AVAXUSDT", "ARBUSDT"]
 intervals = ['30m']
 
 # Date range (last month)
@@ -24,6 +37,7 @@ rsi_sell_threshold = 40
 atr_period = 14
 atr_multiplier_sl = 1.5
 atr_multiplier_tp = 3.0
+trailing_stop_multiplier = 1.5
 max_leverage = 5.0
 min_leverage = 1.0
 
@@ -84,6 +98,7 @@ def backtest(symbol, interval):
     sell_signals = 0
     positions = []
     current_position = None
+    trailing_stop = None
     
     for i in range(1, len(data)):
         prev = data.iloc[i-1]
@@ -97,66 +112,88 @@ def backtest(symbol, interval):
         if buy_signal:
             buy_signals += 1
             leverage = min(max_leverage, max(min_leverage, 5.0 / (curr['atr'] / curr['open'])))
+            message = f"Buy Signal: {symbol} at {curr['open']} on {curr['timestamp']} (30m, Leverage: {round(leverage, 2)}x)"
+            asyncio.run(send_telegram_message(message))
             if current_position and current_position['side'] == 'SHORT':
                 exit_price = curr['open']
                 pnl = (current_position['entry_price'] - exit_price) / current_position['entry_price'] * current_position['leverage']
                 positions.append(pnl)
+                message = f"Closed SHORT: {symbol}, PnL: {round(pnl*100, 2)}%"
+                asyncio.run(send_telegram_message(message))
             if not current_position:
                 current_position = {
                     'side': 'LONG', 
                     'entry_price': curr['open'], 
                     'atr': curr['atr'], 
                     'leverage': leverage,
-                    'highest_price': curr['open'],  # Track highest price for Trailing Stop
-                    'trailing_sl': curr['open'] - (curr['atr'] * atr_multiplier_sl)
+                    'highest_price': curr['open']
                 }
+                trailing_stop = curr['open'] - (curr['atr'] * trailing_stop_multiplier)
         
         if sell_signal:
             sell_signals += 1
             leverage = min(max_leverage, max(min_leverage, 5.0 / (curr['atr'] / curr['open'])))
+            message = f"Sell Signal: {symbol} at {curr['open']} on {curr['timestamp']} (30m, Leverage: {round(leverage, 2)}x)"
+            asyncio.run(send_telegram_message(message))
             if current_position and current_position['side'] == 'LONG':
                 exit_price = curr['open']
                 pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] * current_position['leverage']
                 positions.append(pnl)
+                message = f"Closed LONG: {symbol}, PnL: {round(pnl*100, 2)}%"
+                asyncio.run(send_telegram_message(message))
             if not current_position:
                 current_position = {
                     'side': 'SHORT', 
                     'entry_price': curr['open'], 
                     'atr': curr['atr'], 
                     'leverage': leverage,
-                    'lowest_price': curr['open'],  # Track lowest price for Trailing Stop
-                    'trailing_sl': curr['open'] + (curr['atr'] * atr_multiplier_sl)
+                    'lowest_price': curr['open']
                 }
+                trailing_stop = curr['open'] + (curr['atr'] * trailing_stop_multiplier)
         
         if current_position:
             atr = current_position['atr']
             leverage = current_position['leverage']
             if current_position['side'] == 'LONG':
-                # Update Trailing Stop
+                # Update trailing stop
                 current_position['highest_price'] = max(current_position['highest_price'], curr['high'])
-                current_position['trailing_sl'] = current_position['highest_price'] - (atr * atr_multiplier_sl)
+                trailing_stop = max(trailing_stop, current_position['highest_price'] - (atr * trailing_stop_multiplier))
+                sl = current_position['entry_price'] - (atr * atr_multiplier_sl)
                 tp = current_position['entry_price'] + (atr * atr_multiplier_tp)
-                if curr['low'] <= current_position['trailing_sl']:
-                    pnl = (current_position['trailing_sl'] - current_position['entry_price']) / current_position['entry_price'] * leverage
+                if curr['low'] <= trailing_stop:
+                    pnl = (trailing_stop - current_position['entry_price']) / current_position['entry_price'] * leverage
                     positions.append(pnl)
+                    message = f"Trailing Stop (LONG): {symbol}, PnL: {round(pnl*100, 2)}%"
+                    asyncio.run(send_telegram_message(message))
                     current_position = None
+                    trailing_stop = None
                 elif curr['high'] >= tp:
                     pnl = (tp - current_position['entry_price']) / current_position['entry_price'] * leverage
                     positions.append(pnl)
+                    message = f"Take Profit (LONG): {symbol}, PnL: {round(pnl*100, 2)}%"
+                    asyncio.run(send_telegram_message(message))
                     current_position = None
+                    trailing_stop = None
             else:
-                # Update Trailing Stop
+                # Update trailing stop
                 current_position['lowest_price'] = min(current_position['lowest_price'], curr['low'])
-                current_position['trailing_sl'] = current_position['lowest_price'] + (atr * atr_multiplier_sl)
+                trailing_stop = min(trailing_stop, current_position['lowest_price'] + (atr * trailing_stop_multiplier))
+                sl = current_position['entry_price'] + (atr * atr_multiplier_sl)
                 tp = current_position['entry_price'] - (atr * atr_multiplier_tp)
-                if curr['high'] >= current_position['trailing_sl']:
-                    pnl = (current_position['entry_price'] - current_position['trailing_sl']) / current_position['entry_price'] * leverage
+                if curr['high'] >= trailing_stop:
+                    pnl = (current_position['entry_price'] - trailing_stop) / current_position['entry_price'] * leverage
                     positions.append(pnl)
+                    message = f"Trailing Stop (SHORT): {symbol}, PnL: {round(pnl*100, 2)}%"
+                    asyncio.run(send_telegram_message(message))
                     current_position = None
+                    trailing_stop = None
                 elif curr['low'] <= tp:
                     pnl = (current_position['entry_price'] - tp) / current_position['entry_price'] * leverage
                     positions.append(pnl)
+                    message = f"Take Profit (SHORT): {symbol}, PnL: {round(pnl*100, 2)}%"
+                    asyncio.run(send_telegram_message(message))
                     current_position = None
+                    trailing_stop = None
     
     if current_position:
         exit_price = data.iloc[-1]['close']
@@ -164,8 +201,12 @@ def backtest(symbol, interval):
         pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] if current_position['side'] == 'LONG' else (current_position['entry_price'] - exit_price) / current_position['entry_price']
         pnl *= leverage
         positions.append(pnl)
+        message = f"Closed at end (FINAL): {symbol}, PnL: {round(pnl*100, 2)}%"
+        asyncio.run(send_telegram_message(message))
     
     cum_return = (np.prod([1 + p for p in positions]) - 1) * 100 if positions else 0.0
+    message = f"Backtest Result: {symbol} (30m), Buy Signals: {buy_signals}, Sell Signals: {sell_signals}, Expected Return: {round(cum_return, 2)}%"
+    asyncio.run(send_telegram_message(message))
     
     return {
         'buy_signals': buy_signals,
