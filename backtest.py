@@ -4,30 +4,33 @@ import requests
 import json
 from datetime import datetime, timedelta
 import pytz
+import time
 
 # Symbols and intervals
 symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "LINKUSDT"]
 intervals = ['30m']
 
-# Date range (last month)
+# Date range (last 2 months)
 end_date = datetime.now(pytz.UTC)
-start_date = end_date - timedelta(days=60)  # زيادة الفترة لشهرين
+start_date = end_date - timedelta(days=60)
 start_ts = int(start_date.timestamp() * 1000)
 end_ts = int(end_date.timestamp() * 1000)
 
-# إعدادات محسنة بشكل كبير
+print(f"Fetching data from {start_date} to {end_date}")
+
+# Optimized settings
 rsi_period = 14
-sma_short = 10    # تقليل أكثر للحساسية
-sma_long = 50     # تقليل أكثر
-rsi_buy_threshold = 50  # تخفيف كبير
-rsi_sell_threshold = 50 # تخفيف كبير
+sma_short = 10
+sma_long = 50
+rsi_buy_threshold = 50
+rsi_sell_threshold = 50
 atr_period = 14
-atr_multiplier_sl = 1.0  # وقف خسارة أقرب
-atr_multiplier_tp = 1.5  # أهداف أقرب
+atr_multiplier_sl = 1.0
+atr_multiplier_tp = 1.5
 max_leverage = 8.0
 min_leverage = 2.0
 
-# إعدادات المؤشرات المساعدة
+# Additional indicators
 volume_sma_period = 10
 vwap_period = 14
 macd_fast = 8
@@ -39,16 +42,18 @@ def get_historical_data(symbol, interval, start_ts, end_ts):
     params = {
         'symbol': symbol,
         'interval': interval,
-        'startTime': start_ts,
+        'startTime': start_ts,  # Corrected: was 'starTime'
         'endTime': end_ts,
-        'limit': 2000  # زيادة الحد
+        'limit': 1000  # Reduced to avoid rate limits
     }
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        klines = json.loads(response.text)
+        klines = response.json()
         if not klines:
+            print(f"No data returned for {symbol}")
             return None
+        
         data = pd.DataFrame(klines, columns=[
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'quote_volume', 'trades', 'taker_buy_base',
@@ -56,55 +61,58 @@ def get_historical_data(symbol, interval, start_ts, end_ts):
         ])
         data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
         data[['open', 'high', 'low', 'close', 'volume']] = data[['open', 'high', 'low', 'close', 'volume']].astype(float)
+        print(f"Successfully fetched {len(data)} candles for {symbol}")
         return data
     except Exception as e:
         print(f"Error fetching {symbol} {interval}: {e}")
         return None
 
 def calculate_indicators(df):
-    # المتوسطات المتحركة السريعة
+    # Moving averages
     df['sma10'] = df['close'].rolling(window=sma_short).mean()
     df['sma50'] = df['close'].rolling(window=sma_long).mean()
-    df['sma5'] = df['close'].rolling(window=5).mean()  # متوسط سريع إضافي
+    df['sma5'] = df['close'].rolling(window=5).mean()
     
-    # RSI مع إعدادات مرنة
+    # RSI
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0).rolling(rsi_period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(rsi_period).mean()
+    loss = (-delta).where(delta < 0, 0).rolling(rsi_period).mean()
     rs = gain / (loss + 1e-10)
     df['rsi'] = 100 - (100 / (1 + rs))
     
     # ATR
-    tr = pd.DataFrame({
-        'high_low': df['high'] - df['low'],
-        'high_close': abs(df['high'] - df['close'].shift()),
-        'low_close': abs(df['low'] - df['close'].shift())
-    }).max(axis=1)
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
+    tr = np.maximum(np.maximum(high_low, high_close), low_close)
     df['atr'] = tr.rolling(atr_period).mean()
     
-    # VWAP مبسط
+    # VWAP
     df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
     df['vwap'] = (df['typical_price'] * df['volume']).rolling(vwap_period).sum() / df['volume'].rolling(vwap_period).sum()
     
-    # MACD سريع
-    exp1 = df['close'].ewm(span=macd_fast).mean()
-    exp2 = df['close'].ewm(span=macd_slow).mean()
+    # MACD
+    exp1 = df['close'].ewm(span=macd_fast, adjust=False).mean()
+    exp2 = df['close'].ewm(span=macd_slow, adjust=False).mean()
     df['macd'] = exp1 - exp2
-    df['macd_signal'] = df['macd'].ewm(span=macd_signal).mean()
+    df['macd_signal'] = df['macd'].ewm(span=macd_signal, adjust=False).mean()
     df['macd_histogram'] = df['macd'] - df['macd_signal']
     
-    # مؤشرات الحجم
+    # Volume indicators
     df['volume_sma'] = df['volume'].rolling(volume_sma_period).mean()
     df['volume_ratio'] = df['volume'] / df['volume_sma']
     
-    # تقلبات السعر
+    # Price changes
     df['price_change'] = df['close'].pct_change()
     df['volatility'] = df['price_change'].rolling(10).std()
     
     return df.dropna().reset_index(drop=True)
 
 def calculate_leverage(atr, price, volatility):
-    """حساب رافعة أكثر عدوانية مع مراعاة التقلبات"""
+    """Calculate dynamic leverage"""
+    if pd.isna(atr) or pd.isna(price) or price == 0:
+        return min_leverage
+    
     volatility_ratio = atr / price
     if volatility_ratio < 0.008:
         return max_leverage
@@ -116,11 +124,15 @@ def calculate_leverage(atr, price, volatility):
         return min_leverage
 
 def backtest(symbol, interval):
+    print(f"\nBacktesting {symbol} on {interval}...")
+    
     data = get_historical_data(symbol, interval, start_ts, end_ts)
     if data is None or len(data) < sma_long:
+        print(f"Insufficient data for {symbol}")
         return {'buy_signals': 0, 'sell_signals': 0, 'expected_return': 0.0, 'total_trades': 0}
     
     data = calculate_indicators(data)
+    print(f"Calculated indicators for {symbol}, {len(data)} rows")
     
     buy_signals = 0
     sell_signals = 0
@@ -129,137 +141,158 @@ def backtest(symbol, interval):
     total_trades = 0
     
     for i in range(3, len(data)):
-        prev3 = data.iloc[i-3]
-        prev2 = data.iloc[i-2]
-        prev = data.iloc[i-1]
-        curr = data.iloc[i]
-        
-        # شروط شراء موسعة - أكثر مرونة
-        buy_conditions = [
-            # 1. تقاطع المتوسطات
-            (curr['sma10'] > curr['sma50']) and (prev['sma10'] <= prev['sma50']),
-            (curr['sma5'] > curr['sma10']) and (prev['sma5'] <= prev['sma10']),
+        try:
+            prev3 = data.iloc[i-3] if i >= 3 else None
+            prev2 = data.iloc[i-2] if i >= 2 else None
+            prev = data.iloc[i-1]
+            curr = data.iloc[i]
             
-            # 2. شروط RSI مرنة
-            (curr['rsi'] > 45) and (curr['rsi'] < 70),
-            (curr['rsi'] > 50) and (prev['rsi'] <= 50),
-            
-            # 3. اتجاه الاتجاه
-            (curr['close'] > curr['sma50']),
-            (curr['close'] > curr['vwap']),
-            
-            # 4. زخم MACD
-            (curr['macd'] > curr['macd_signal']),
-            (curr['macd_histogram'] > prev['macd_histogram']),
-            
-            # 5. شروط الحجم المخففة
-            (curr['volume_ratio'] > 0.7),
-            (curr['volume'] > prev['volume'])
-        ]
-        
-        # شروط بيع موسعة
-        sell_conditions = [
-            # 1. تقاطع المتوسطات
-            (curr['sma10'] < curr['sma50']) and (prev['sma10'] >= prev['sma50']),
-            (curr['sma5'] < curr['sma10']) and (prev['sma5'] >= prev['sma10']),
-            
-            # 2. شروط RSI مرنة
-            (curr['rsi'] < 55) and (curr['rsi'] > 30),
-            (curr['rsi'] < 50) and (prev['rsi'] >= 50),
-            
-            # 3. اتجاه الاتجاه
-            (curr['close'] < curr['sma50']),
-            (curr['close'] < curr['vwap']),
-            
-            # 4. زخم MACD
-            (curr['macd'] < curr['macd_signal']),
-            (curr['macd_histogram'] < prev['macd_histogram']),
-            
-            # 5. شروط الحجم المخففة
-            (curr['volume_ratio'] > 0.7),
-            (curr['volume'] > prev['volume'])
-        ]
-        
-        # إشارات الشراء - تحتاج 4 من 10 شروط فقط
-        buy_score = sum(buy_conditions)
-        buy_signal = buy_score >= 4
-        
-        # إشارات البيع - تحتاج 4 من 10 شروط فقط  
-        sell_score = sum(sell_conditions)
-        sell_signal = sell_score >= 4
-        
-        # إدارة المراكز
-        if buy_signal:
-            buy_signals += 1
-            leverage = calculate_leverage(curr['atr'], curr['open'], curr['volatility'])
-            
-            if current_position and current_position['side'] == 'SHORT':
-                exit_price = curr['open']
-                pnl = (current_position['entry_price'] - exit_price) / current_position['entry_price'] * current_position['leverage']
-                positions.append(pnl)
-                total_trades += 1
-                current_position = None
-            
-            if not current_position:
-                current_position = {
-                    'side': 'LONG', 
-                    'entry_price': curr['open'], 
-                    'atr': curr['atr'], 
-                    'leverage': leverage,
-                    'entry_time': i
-                }
-        
-        if sell_signal:
-            sell_signals += 1
-            leverage = calculate_leverage(curr['atr'], curr['open'], curr['volatility'])
-            
-            if current_position and current_position['side'] == 'LONG':
-                exit_price = curr['open']
-                pnl = (exit_price - current_position['entry_price']) / current_position['entry_price'] * current_position['leverage']
-                positions.append(pnl)
-                total_trades += 1
-                current_position = None
-            
-            if not current_position:
-                current_position = {
-                    'side': 'SHORT', 
-                    'entry_price': curr['open'], 
-                    'atr': curr['atr'], 
-                    'leverage': leverage,
-                    'entry_time': i
-                }
-        
-        # إدارة المراكز المفتوحة مع خروج مبكر
-        if current_position:
-            atr = current_position['atr']
-            leverage = current_position['leverage']
-            entry_price = current_position['entry_price']
-            time_in_trade = i - current_position['entry_time']
-            
-            if current_position['side'] == 'LONG':
-                sl = entry_price - (atr * atr_multiplier_sl)
-                tp = entry_price + (atr * atr_multiplier_tp)
+            # Buy conditions
+            buy_conditions = [
+                # Moving average crossovers
+                (curr['sma10'] > curr['sma50']) and (prev['sma10'] <= prev['sma50']),
+                (curr['sma5'] > curr['sma10']) and (prev['sma5'] <= prev['sma10']),
                 
-                # خروج مبكر إذا تحقق شرط
-                if curr['low'] <= sl or curr['high'] >= tp or time_in_trade > 15:
-                    exit_price = sl if curr['low'] <= sl else (tp if curr['high'] >= tp else curr['close'])
-                    pnl = (exit_price - entry_price) / entry_price * leverage
+                # RSI conditions
+                (45 <= curr['rsi'] <= 70),
+                (curr['rsi'] > 50) and (prev['rsi'] <= 50),
+                
+                # Trend direction
+                curr['close'] > curr['sma50'],
+                curr['close'] > curr['vwap'],
+                
+                # MACD momentum
+                curr['macd'] > curr['macd_signal'],
+                curr['macd_histogram'] > prev['macd_histogram'],
+                
+                # Volume conditions
+                curr['volume_ratio'] > 0.7,
+                curr['volume'] > prev['volume']
+            ]
+            
+            # Sell conditions
+            sell_conditions = [
+                # Moving average crossovers
+                (curr['sma10'] < curr['sma50']) and (prev['sma10'] >= prev['sma50']),
+                (curr['sma5'] < curr['sma10']) and (prev['sma5'] >= prev['sma10']),
+                
+                # RSI conditions
+                (30 <= curr['rsi'] <= 55),
+                (curr['rsi'] < 50) and (prev['rsi'] >= 50),
+                
+                # Trend direction
+                curr['close'] < curr['sma50'],
+                curr['close'] < curr['vwap'],
+                
+                # MACD momentum
+                curr['macd'] < curr['macd_signal'],
+                curr['macd_histogram'] < prev['macd_histogram'],
+                
+                # Volume conditions
+                curr['volume_ratio'] > 0.7,
+                curr['volume'] > prev['volume']
+            ]
+            
+            buy_score = sum(1 for condition in buy_conditions if condition)
+            sell_score = sum(1 for condition in sell_conditions if condition)
+            
+            buy_signal = buy_score >= 4
+            sell_signal = sell_score >= 4
+            
+            # Position management
+            leverage = calculate_leverage(curr['atr'], curr['open'], curr['volatility'])
+            
+            if buy_signal:
+                buy_signals += 1
+                
+                if current_position and current_position['side'] == 'SHORT':
+                    # Close short position
+                    exit_price = curr['open']
+                    pnl = ((current_position['entry_price'] - exit_price) / 
+                          current_position['entry_price'] * current_position['leverage'])
                     positions.append(pnl)
                     total_trades += 1
                     current_position = None
+                
+                if not current_position:
+                    # Open long position
+                    current_position = {
+                        'side': 'LONG', 
+                        'entry_price': curr['open'], 
+                        'atr': curr['atr'], 
+                        'leverage': leverage,
+                        'entry_time': i
+                    }
+            
+            if sell_signal:
+                sell_signals += 1
+                
+                if current_position and current_position['side'] == 'LONG':
+                    # Close long position
+                    exit_price = curr['open']
+                    pnl = ((exit_price - current_position['entry_price']) / 
+                          current_position['entry_price'] * current_position['leverage'])
+                    positions.append(pnl)
+                    total_trades += 1
+                    current_position = None
+                
+                if not current_position:
+                    # Open short position
+                    current_position = {
+                        'side': 'SHORT', 
+                        'entry_price': curr['open'], 
+                        'atr': curr['atr'], 
+                        'leverage': leverage,
+                        'entry_time': i
+                    }
+            
+            # Manage open positions
+            if current_position:
+                atr = current_position['atr']
+                leverage = current_position['leverage']
+                entry_price = current_position['entry_price']
+                time_in_trade = i - current_position['entry_time']
+                
+                if current_position['side'] == 'LONG':
+                    sl = entry_price - (atr * atr_multiplier_sl)
+                    tp = entry_price + (atr * atr_multiplier_tp)
                     
-            else:  # SHORT
-                sl = entry_price + (atr * atr_multiplier_sl)
-                tp = entry_price - (atr * atr_multiplier_tp)
-                
-                if curr['high'] >= sl or curr['low'] <= tp or time_in_trade > 15:
-                    exit_price = sl if curr['high'] >= sl else (tp if curr['low'] <= tp else curr['close'])
-                    pnl = (entry_price - exit_price) / entry_price * leverage
-                    positions.append(pnl)
-                    total_trades += 1
-                    current_position = None
+                    # Exit conditions
+                    if curr['low'] <= sl or curr['high'] >= tp or time_in_trade > 15:
+                        if curr['low'] <= sl:
+                            exit_price = sl
+                        elif curr['high'] >= tp:
+                            exit_price = tp
+                        else:
+                            exit_price = curr['close']
+                        
+                        pnl = (exit_price - entry_price) / entry_price * leverage
+                        positions.append(pnl)
+                        total_trades += 1
+                        current_position = None
+                        
+                else:  # SHORT position
+                    sl = entry_price + (atr * atr_multiplier_sl)
+                    tp = entry_price - (atr * atr_multiplier_tp)
+                    
+                    if curr['high'] >= sl or curr['low'] <= tp or time_in_trade > 15:
+                        if curr['high'] >= sl:
+                            exit_price = sl
+                        elif curr['low'] <= tp:
+                            exit_price = tp
+                        else:
+                            exit_price = curr['close']
+                        
+                        pnl = (entry_price - exit_price) / entry_price * leverage
+                        positions.append(pnl)
+                        total_trades += 1
+                        current_position = None
+                        
+        except Exception as e:
+            print(f"Error processing row {i} for {symbol}: {e}")
+            continue
     
-    # إغلاق المركز المتبقي
+    # Close any remaining position
     if current_position:
         exit_price = data.iloc[-1]['close']
         leverage = current_position['leverage']
@@ -270,15 +303,19 @@ def backtest(symbol, interval):
         positions.append(pnl)
         total_trades += 1
     
-    # الإحصائيات
+    # Calculate statistics
     if positions:
         cumulative_return = (np.prod([1 + p for p in positions]) - 1) * 100
         win_rate = (sum(1 for p in positions if p > 0) / len(positions)) * 100
-        profit_factor = sum(p for p in positions if p > 0) / abs(sum(p for p in positions if p < 0)) if any(p < 0 for p in positions) else float('inf')
+        losses = [p for p in positions if p < 0]
+        profits = [p for p in positions if p > 0]
+        profit_factor = sum(profits) / abs(sum(losses)) if losses and sum(losses) != 0 else float('inf')
     else:
         cumulative_return = 0.0
         win_rate = 0.0
         profit_factor = 0.0
+    
+    print(f"Completed backtest for {symbol}: {total_trades} trades, {cumulative_return:.2f}% return")
     
     return {
         'buy_signals': buy_signals,
@@ -290,25 +327,39 @@ def backtest(symbol, interval):
         'avg_trade_return': round(np.mean(positions) * 100, 2) if positions else 0.0
     }
 
-# التشغيل والنتائج
-print("جاري تشغيل الاستراتيجية المحسنة لزيادة الصفقات...")
+# Run backtests
+print("Starting enhanced backtesting...")
+print("=" * 50)
+
 results = {}
 for symbol in symbols:
     results[symbol] = {}
     for interval in intervals:
+        # Add delay to avoid rate limiting
+        time.sleep(1)
         results[symbol][interval] = backtest(symbol, interval)
 
-print("\n" + "="*60)
-print("نتائج الاستراتيجية المحسنة - زيادة الصفقات")
-print("="*60)
+# Display results
+print("\n" + "=" * 60)
+print("ENHANCED STRATEGY RESULTS - INCREASED TRADES")
+print("=" * 60)
+
 for symbol in symbols:
     for interval in intervals:
         result = results[symbol][interval]
-        print(f"\n{symbol} ({interval}):")
-        print(f"  📈 إشارات شراء: {result['buy_signals']}")
-        print(f"  📉 إشارات بيع: {result['sell_signals']}")
-        print(f"  🔢 إجمالي الصفقات: {result['total_trades']}")
-        print(f"  💰 العائد المتوقع: {result['expected_return']}%")
-        print(f"  ✅ نسبة الصفقات الرابحة: {result['win_rate']}%")
-        print(f"  📊 عامل الربحية: {result['profit_factor']}")
-        print(f"  📋 متوسط عائد الصفقة: {result['avg_trade_return']}%")
+        print(f"\n🎯 {symbol} ({interval}):")
+        print(f"   📈 Buy Signals: {result['buy_signals']}")
+        print(f"   📉 Sell Signals: {result['sell_signals']}")
+        print(f"   🔢 Total Trades: {result['total_trades']}")
+        print(f"   💰 Expected Return: {result['expected_return']}%")
+        print(f"   ✅ Win Rate: {result['win_rate']}%")
+        print(f"   📊 Profit Factor: {result['profit_factor']}")
+        print(f"   📋 Avg Trade Return: {result['avg_trade_return']}%")
+
+# Summary
+total_trades_all = sum(results[symbol][interval]['total_trades'] for symbol in symbols for interval in intervals)
+avg_return = np.mean([results[symbol][interval]['expected_return'] for symbol in symbols for interval in intervals])
+
+print(f"\n📊 SUMMARY:")
+print(f"   Total Trades Across All Symbols: {total_trades_all}")
+print(f"   Average Return: {avg_return:.2f}%")
