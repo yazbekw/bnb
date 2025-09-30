@@ -4,19 +4,9 @@ import requests
 import json
 from datetime import datetime, timedelta
 import pytz
-import telegram
 import asyncio
 
-# Telegram Bot setup (replace with your bot token and chat ID)
-TELEGRAM_BOT_TOKEN = 'YOUR_BOT_TOKEN'  # Replace with your Telegram Bot Token
-TELEGRAM_CHAT_ID = 'YOUR_CHAT_ID'    # Replace with your Telegram Chat ID
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
-async def send_telegram_message(message):
-    try:
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    except Exception as e:
-        print(f"Error sending Telegram message: {e}")
 
 # Symbols and intervals
 symbols = ["SOLUSDT", "ETHUSDT", "BNBUSDT", "LINKUSDT", "AVAXUSDT", "ARBUSDT"]
