@@ -329,7 +329,7 @@ class FuturesTradingBot:
     OPTIMAL_SETTINGS = {
         'symbols': ["LINKUSDT", "SOLUSDT", "ETHUSDT", "BNBUSDT"],
         'intervals': ['30m', '1h'],
-        'weights': {'LINKUSDT': 1.4, 'SOLUSDT': 1.2, 'ETHUSDT': 1.0, 'BNBUSDT': 0.7},
+        'weights': {'LINKUSDT': 1.2, 'SOLUSDT': 1.2, 'ETHUSDT': 1.0, 'BNBUSDT': 1.0},
     }
     
     TOTAL_CAPITAL = 50
