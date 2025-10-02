@@ -473,6 +473,9 @@ class FuturesTradingBot:
         'min_trend_strength': 0.5,
         'max_price_deviation': 8.0,
         'max_volatility': 5.0,
+        'min_momentum_strength': 0.001,  # شرط زخم أقوى
+        'min_volume_ratio': 0.9,         # شرط حجم أقوى
+        'max_contradiction_score': 1,    # أقصى درجة تناقض مسموحة
         'continuous_monitor_interval': 10,  # دقائق بين كل فحص
         'min_trade_age_for_monitor': 30,    # دقيقة - لا تراقب الصفقات الجديدة
         'exit_signal_threshold': 3.0,       # الحد الأدنى لإشارات الخروج
@@ -791,33 +794,184 @@ class FuturesTradingBot:
             return False, {}, None
 
     def should_accept_signal(self, symbol, direction, analysis):
-        """فلاتر الجودة للإشارات"""
-        
+        """فلاتر الجودة المحسنة للإشارات مع كشف التناقضات"""
+    
         # تجنب الذروة في RSI
         if analysis['rsi'] > 70 and direction == 'LONG':
             logger.info(f"⏸️ تجنب LONG - RSI مرتفع: {analysis['rsi']:.1f}")
             return False
-            
+        
         if analysis['rsi'] < 30 and direction == 'SHORT':
             logger.info(f"⏸️ تجنب SHORT - RSI منخفض: {analysis['rsi']:.1f}")
             return False
-        
+    
         # قوة الاتجاه
         if abs(analysis['trend_strength']) < self.TRADING_SETTINGS['min_trend_strength']:
             logger.info(f"⏸️ إشارة ضعيفة - اتجاه ضعيف: {analysis['trend_strength']:.2f}%")
             return False
-        
+    
         # تقلبات السعر
         if analysis['atr'] / analysis['price'] > self.TRADING_SETTINGS['max_volatility'] / 100:
             logger.info(f"⏸️ تقلبات عالية - ATR: {(analysis['atr']/analysis['price']*100):.1f}%")
             return False
-            
+        
         # انحراف السعر عن المتوسط
         if abs(analysis['price_vs_sma20']) > self.TRADING_SETTINGS['max_price_deviation']:
             logger.info(f"⏸️ سعر بعيد عن المتوسط: {analysis['price_vs_sma20']:.1f}%")
             return False
+    
+        # ✅ الفلاتر الجديدة المحسنة
+    
+        # 1. تحسين شرط الزخم - أكثر صرامة
+        if direction == 'LONG' and analysis['momentum'] < 0.001:
+            logger.info(f"⏸️ تجنب LONG - زخم ضعيف: {analysis['momentum']:.4f}")
+            return False
         
+        if direction == 'SHORT' and analysis['momentum'] > -0.001:
+            logger.info(f"⏸️ تجنب SHORT - زخم ضعيف: {analysis['momentum']:.4f}")
+            return False
+    
+        # 2. شرط حجم أقوى
+        if analysis['volume_ratio'] < 0.9:  # كان 0.8
+            logger.info(f"⏸️ حجم تداول ضعيف: {analysis['volume_ratio']:.2f}")
+            return False
+    
+        # 3. كشف التناقضات بين المؤشرات
+        contradiction_score = self._detect_contradictions(analysis, direction)
+        if contradiction_score >= 2:  # إذا كان هناك تناقضان أو أكثر
+            logger.info(f"⏸️ إشارة متناقضة - درجة التناقض: {contradiction_score}")
+            return False
+    
+        # 4. تأكيد الاتجاه من متعدد الإطار الزمني
+        if not self._confirm_trend_multi_timeframe(symbol, direction):
+            logger.info(f"⏸️ اتجاه غير مؤكد في الإطارات الزمنية المتعددة")
+            return False
+    
         return True
+
+    def _detect_contradictions(self, analysis, direction):
+        """كشف التناقضات بين المؤشرات - دالة جديدة"""
+        contradictions = 0
+    
+        # التناقض 1: اتجاه المتوسطات vs الزخم
+        if direction == 'LONG':
+            if analysis['sma10'] > analysis['sma50'] and analysis['momentum'] < -0.003:
+                contradictions += 1
+                logger.info("⚠️ تناقض: اتجاه صاعد لكن زخم سلبي قوي")
+        else:  # SHORT
+            if analysis['sma10'] < analysis['sma50'] and analysis['momentum'] > 0.003:
+                contradictions += 1
+                logger.info("⚠️ تناقض: اتجاه هابط لكن زخم إيجابي قوي")
+    
+        # التناقض 2: RSI vs الاتجاه
+        if direction == 'LONG' and analysis['rsi'] > 65 and analysis['momentum'] < 0:
+            contradictions += 1
+            logger.info("⚠️ تناقض: RSI مرتفع في منطقة شراء لكن زخم سلبي")
+    
+        # التناقض 3: الحجم vs قوة الإشارة
+        if analysis['signal_strength'] > 60 and analysis['volume_ratio'] < 1.0:
+            contradictions += 1
+            logger.info("⚠️ تناقض: إشارة قوية لكن حجم ضعيف")
+    
+        # التناقض 4: MACD vs المتوسطات
+        if direction == 'LONG' and analysis['macd'] < analysis['macd_signal'] and analysis['sma10'] > analysis['sma20']:
+            contradictions += 1
+            logger.info("⚠️ تناقض: MACD هابط لكن المتوسطات صاعدة")
+    
+        return contradictions
+
+    def _confirm_trend_multi_timeframe(self, symbol, direction):
+        """تأكيد الاتجاه من إطارات زمنية متعددة - دالة جديدة"""
+        try:
+            # الحصول على بيانات من إطار زمني أعلى (1 ساعة) للتأكيد
+            hourly_data = self.get_historical_data(symbol, '1h', 50)
+            if hourly_data is None or len(hourly_data) < 20:
+                return True  # إذا فشل الجلب، نعتبر أنه لا تناقض
+            
+            hourly_data = self.calculate_indicators(hourly_data)
+            if len(hourly_data) == 0:
+                return True
+            
+            latest_hourly = hourly_data.iloc[-1]
+        
+            # التحقق من تطابق الاتجاه
+            if direction == 'LONG':
+                trend_confirmed = latest_hourly['sma10'] > latest_hourly['sma50']
+            else:  # SHORT
+                trend_confirmed = latest_hourly['sma10'] < latest_hourly['sma50']
+        
+            return trend_confirmed
+        
+        except Exception as e:
+            logger.error(f"❌ خطأ في تأكيد الاتجاه متعدد الإطار لـ {symbol}: {e}")
+            return True  # في حالة الخطأ، نعتبر أنه لا مشكلة
+
+    def send_enhanced_trade_signal_notification(self, symbol, direction, analysis, can_trade, reasons=None):
+        """إشعار إشارة تداول محسن مع تحذيرات التناقض"""
+        if not self.notifier:
+            return
+        
+        try:
+            contradiction_score = self._detect_contradictions(analysis, direction)
+            has_contradictions = contradiction_score >= 1
+        
+            if can_trade and not has_contradictions:
+                # الإشعار العادي بدون تناقضات
+                message = (
+                    f"🔔 <b>إشارة تداول قوية - جاهزة للتنفيذ</b>\n"
+                    f"العملة: {symbol}\n"
+                    f"الاتجاه: {direction}\n"
+                    f"قوة الإشارة: {analysis['signal_strength']:.1f}%\n"
+                    f"السعر الحالي: ${analysis['price']:.4f}\n"
+                    f"الرصيد المتاح: ${self.symbol_balances.get(symbol, 0):.2f}\n"
+                    f"الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    f"<b>تفاصيل المؤشرات:</b>\n"
+                    f"• SMA10: {analysis['sma10']:.4f}\n"
+                    f"• SMA20: {analysis['sma20']:.4f}\n"
+                    f"• SMA50: {analysis['sma50']:.4f}\n"
+                    f"• RSI: {analysis['rsi']:.2f}\n"
+                    f"• Momentum: {analysis['momentum']:.4f}\n"
+                    f"• Volume Ratio: {analysis['volume_ratio']:.2f}\n"
+                    f"• MACD: {analysis['macd']:.4f}"
+                )
+            elif can_trade and has_contradictions:
+                # إشعار مع تحذير التناقضات
+                message = (
+                    f"⚠️ <b>إشارة تداول مع تحذيرات - يرجى المراجعة</b>\n"
+                    f"العملة: {symbol}\n"
+                    f"الاتجاه: {direction}\n"
+                    f"قوة الإشارة: {analysis['signal_strength']:.1f}%\n"
+                    f"<b>تحذيرات التناقض:</b> {contradiction_score}\n"
+                    f"السعر الحالي: ${analysis['price']:.4f}\n"
+                    f"الرصيد المتاح: ${self.symbol_balances.get(symbol, 0):.2f}\n"
+                    f"الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    f"<b>تفاصيل المؤشرات:</b>\n"
+                    f"• SMA10: {analysis['sma10']:.4f}\n"
+                    f"• SMA20: {analysis['sma20']:.4f}\n"
+                    f"• SMA50: {analysis['sma50']:.4f}\n"
+                    f"• RSI: {analysis['rsi']:.2f}\n"
+                    f"• Momentum: {analysis['momentum']:.4f} {'⚠️' if analysis['momentum'] < 0.001 else ''}\n"
+                    f"• Volume Ratio: {analysis['volume_ratio']:.2f} {'⚠️' if analysis['volume_ratio'] < 1.0 else ''}\n"
+                    f"• MACD: {analysis['macd']:.4f}\n\n"
+                    f"<b>ملاحظة:</b> هذه الإشارة تحتوي على تناقضات وقد تكون محفوفة بالمخاطر"
+                )
+            else:
+                # إشعار عدم إمكانية التنفيذ
+                message = (
+                    f"⏸️ <b>إشارة تداول - غير قابلة للتنفيذ</b>\n"
+                    f"العملة: {symbol}\n"
+                    f"الاتجاه: {direction}\n"
+                    f"قوة الإشارة: {analysis['signal_strength']:.1f}%\n"
+                    f"<b>أسباب عدم التنفيذ:</b>\n"
+                )
+                for reason in reasons:
+                    message += f"• {reason}\n"
+                message += f"الوقت: {datetime.now(damascus_tz).strftime('%Y-%m-%d %H:%M:%S')}"
+        
+            self.notifier.send_message(message, 'trade_signal')
+        
+        except Exception as e:
+            logger.error(f"❌ خطأ في إرسال إشعار الإشارة المحسن: {e}")    
 
     def can_open_trade(self, symbol):
         """التحقق من إمكانية فتح صفقة"""
@@ -1201,7 +1355,7 @@ class FuturesTradingBot:
                         
                         can_trade, reasons = self.can_open_trade(symbol)
                         
-                        self.send_trade_signal_notification(symbol, direction, analysis, can_trade, reasons)
+                        self.send_enhanced_trade_signal_notification(symbol, direction, analysis, can_trade, reasons)
                         
                         if can_trade:
                             available_balance = self.symbol_balances.get(symbol, 0)
