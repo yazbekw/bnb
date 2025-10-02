@@ -58,14 +58,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+        
 class PerformanceReporter:
-    """كلاس مستقل لتقارير أداء البوت"""
+    """كلاس محسن لتقارير أداء البوت مع حسابات دقيقة"""
     
     def __init__(self, bot_instance, notifier):
         self.bot = bot_instance
         self.notifier = notifier
         self.start_time = datetime.now(damascus_tz)
         self.trade_history = []
+        self.initial_balance = 0.0
+        self.current_balance = 0.0
         self.daily_stats = {
             'trades_opened': 0,
             'trades_closed': 0,
@@ -73,93 +77,302 @@ class PerformanceReporter:
             'losing_trades': 0,
             'total_pnl': 0.0,
             'max_balance': 0.0,
-            'min_balance': float('inf')
+            'min_balance': float('inf'),
+            'total_fees': 0.0
         }
+        self.initialized = False
         
-    def record_trade_open(self, symbol, direction, entry_price, size_usd):
+    def initialize_balances(self):
+        """تهيئة الأرصدة الأولية من المنصة"""
+        try:
+            if not self.initialized:
+                # جلب الرصيد الأولي من المنصة
+                account_info = self.bot.client.futures_account()
+                total_balance = float(account_info['totalWalletBalance'])
+                
+                self.initial_balance = total_balance
+                self.current_balance = total_balance
+                self.daily_stats['max_balance'] = total_balance
+                self.daily_stats['min_balance'] = total_balance
+                self.initialized = True
+                
+                logger.info(f"💰 تم تهيئة الرصيد الأولي من المنصة: ${total_balance:.2f}")
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في تهيئة الأرصدة: {e}")
+            # استخدام الرصيد الافتراضي في حالة الخطأ
+            self.initial_balance = self.bot.TOTAL_CAPITAL
+            self.current_balance = self.bot.TOTAL_CAPITAL
+            self.daily_stats['max_balance'] = self.bot.TOTAL_CAPITAL
+            self.daily_stats['min_balance'] = self.bot.TOTAL_CAPITAL
+            self.initialized = True
+
+    def update_current_balance(self):
+        """تحديث الرصيد الحالي من المنصة"""
+        try:
+            account_info = self.bot.client.futures_account()
+            self.current_balance = float(account_info['totalWalletBalance'])
+            
+            # تحديث أعلى وأقل رصيد
+            self.daily_stats['max_balance'] = max(self.daily_stats['max_balance'], self.current_balance)
+            self.daily_stats['min_balance'] = min(self.daily_stats['min_balance'], self.current_balance)
+            
+            return self.current_balance
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في تحديث الرصيد الحالي: {e}")
+            # استخدام الحساب التقريبي في حالة الخطأ
+            self.calculate_approximate_balance()
+            return self.current_balance
+
+    def calculate_approximate_balance(self):
+        """حساب رصيد تقريبي بناءً على الصفقات النشطة"""
+        try:
+            # البدء من الرصيد الأولي
+            approximate_balance = self.initial_balance
+            
+            # إضافة/خصم أرباح/خسائر الصفقات المغلقة
+            closed_trades = [t for t in self.trade_history if t['status'] == 'closed']
+            for trade in closed_trades:
+                approximate_balance += trade['pnl_usd']
+            
+            # حساب أرباح/خسائر الصفقات النشطة
+            active_trades = self.bot.active_trades if hasattr(self.bot, 'active_trades') else {}
+            for symbol, trade in active_trades.items():
+                current_price = self.bot.get_current_price(symbol)
+                if current_price and 'entry_price' in trade:
+                    if trade['side'] == 'LONG':
+                        pnl_percent = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                    else:
+                        pnl_percent = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                    
+                    trade_value = trade['quantity'] * trade['entry_price'] / trade.get('leverage', 1)
+                    unrealized_pnl = (pnl_percent / 100) * trade_value
+                    approximate_balance += unrealized_pnl
+            
+            self.current_balance = approximate_balance
+            self.daily_stats['max_balance'] = max(self.daily_stats['max_balance'], self.current_balance)
+            self.daily_stats['min_balance'] = min(self.daily_stats['min_balance'], self.current_balance)
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في الحساب التقريبي للرصيد: {e}")
+
+    def record_trade_open(self, symbol, direction, entry_price, size_usd, fees=0.0):
         """تسجيل فتح صفقة جديدة"""
-        trade_record = {
-            'symbol': symbol,
-            'direction': direction,
-            'entry_price': entry_price,
-            'exit_price': None,
-            'size_usd': size_usd,
-            'open_time': datetime.now(damascus_tz),
-            'close_time': None,
-            'pnl_percent': 0.0,
-            'pnl_usd': 0.0,
-            'status': 'open'
-        }
-        self.trade_history.append(trade_record)
-        self.daily_stats['trades_opened'] += 1
-        
-    def record_trade_close(self, symbol, exit_price, pnl_percent, pnl_usd, reason):
-        """تسجيل إغلاق صفقة"""
-        for trade in self.trade_history:
-            if trade['symbol'] == symbol and trade['status'] == 'open':
-                trade['exit_price'] = exit_price
-                trade['close_time'] = datetime.now(damascus_tz)
-                trade['pnl_percent'] = pnl_percent
-                trade['pnl_usd'] = pnl_usd
-                trade['status'] = 'closed'
-                trade['close_reason'] = reason
-                
-                self.daily_stats['trades_closed'] += 1
-                self.daily_stats['total_pnl'] += pnl_usd
-                
-                if pnl_usd > 0:
-                    self.daily_stats['winning_trades'] += 1
-                else:
-                    self.daily_stats['losing_trades'] += 1
-                break
-                
-    def update_balance_stats(self, current_balance):
-        """تحديث إحصائيات الرصيد"""
-        total_balance = sum(current_balance.values()) if isinstance(current_balance, dict) else current_balance
-        self.daily_stats['max_balance'] = max(self.daily_stats['max_balance'], total_balance)
-        self.daily_stats['min_balance'] = min(self.daily_stats['min_balance'], total_balance)
-        
-    def calculate_performance_metrics(self):
-        """حساب مقاييس الأداء"""
-        closed_trades = [t for t in self.trade_history if t['status'] == 'closed']
-        open_trades = [t for t in self.trade_history if t['status'] == 'open']
-        
-        if not closed_trades:
-            return {
-                'win_rate': 0,
-                'avg_win': 0,
-                'avg_loss': 0,
-                'profit_factor': 0,
-                'total_trades': 0,
-                'active_trades': len(open_trades)
+        try:
+            trade_record = {
+                'symbol': symbol,
+                'direction': direction,
+                'entry_price': entry_price,
+                'exit_price': None,
+                'size_usd': size_usd,
+                'open_time': datetime.now(damascus_tz),
+                'close_time': None,
+                'pnl_percent': 0.0,
+                'pnl_usd': 0.0,
+                'fees': fees,
+                'status': 'open',
+                'close_reason': None
             }
-        
-        winning_trades = [t for t in closed_trades if t['pnl_usd'] > 0]
-        losing_trades = [t for t in closed_trades if t['pnl_usd'] < 0]
-        
-        win_rate = (len(winning_trades) / len(closed_trades)) * 100
-        avg_win = np.mean([t['pnl_usd'] for t in winning_trades]) if winning_trades else 0
-        avg_loss = np.mean([t['pnl_usd'] for t in losing_trades]) if losing_trades else 0
-        
-        total_profit = sum(t['pnl_usd'] for t in winning_trades)
-        total_loss = abs(sum(t['pnl_usd'] for t in losing_trades))
-        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
-        
-        return {
-            'win_rate': win_rate,
-            'avg_win': avg_win,
-            'avg_loss': avg_loss,
-            'profit_factor': profit_factor,
-            'total_trades': len(closed_trades),
-            'active_trades': len(open_trades)
-        }
-        
+            self.trade_history.append(trade_record)
+            self.daily_stats['trades_opened'] += 1
+            self.daily_stats['total_fees'] += fees
+            
+            logger.info(f"📝 تم تسجيل فتح صفقة: {symbol} - {direction}")
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في تسجيل فتح الصفقة: {e}")
+
+    def record_trade_close(self, symbol, exit_price, pnl_percent, pnl_usd, reason, fees=0.0):
+        """تسجيل إغلاق صفقة"""
+        try:
+            trade_found = False
+            for trade in self.trade_history:
+                if trade['symbol'] == symbol and trade['status'] == 'open':
+                    trade['exit_price'] = exit_price
+                    trade['close_time'] = datetime.now(damascus_tz)
+                    trade['pnl_percent'] = pnl_percent
+                    trade['pnl_usd'] = pnl_usd
+                    trade['status'] = 'closed'
+                    trade['close_reason'] = reason
+                    trade['fees'] += fees
+                    
+                    self.daily_stats['trades_closed'] += 1
+                    self.daily_stats['total_pnl'] += pnl_usd
+                    self.daily_stats['total_fees'] += fees
+                    
+                    if pnl_usd > 0:
+                        self.daily_stats['winning_trades'] += 1
+                    else:
+                        self.daily_stats['losing_trades'] += 1
+                    
+                    trade_found = True
+                    logger.info(f"📝 تم تسجيل إغلاق صفقة: {symbol} - الربح: {pnl_usd:.2f}$")
+                    break
+            
+            if not trade_found:
+                logger.warning(f"⚠️ لم يتم العثور على صفقة مفتوحة لـ {symbol} لتسجيل الإغلاق")
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في تسجيل إغلاق الصفقة: {e}")
+
+    def get_active_trades_count(self):
+        """الحصول على عدد الصفقات النشطة بدقة"""
+        try:
+            # الجمع بين الصفقات المسجلة والصفقات النشطة في البوت
+            recorded_active = len([t for t in self.trade_history if t['status'] == 'open'])
+            bot_active = len(self.bot.active_trades) if hasattr(self.bot, 'active_trades') else 0
+            
+            # استخدام العدد الأكبر لضمان الدقة
+            return max(recorded_active, bot_active)
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في حساب الصفقات النشطة: {e}")
+            return 0
+
+    def get_closed_trades_count(self):
+        """الحصول على عدد الصفقات المغلقة بدقة"""
+        try:
+            return len([t for t in self.trade_history if t['status'] == 'closed'])
+        except Exception as e:
+            logger.error(f"❌ خطأ في حساب الصفقات المغلقة: {e}")
+            return 0
+
+    def calculate_performance_metrics(self):
+        """حساب مقاييس الأداء بدقة"""
+        try:
+            closed_trades = [t for t in self.trade_history if t['status'] == 'closed']
+            active_trades_count = self.get_active_trades_count()
+            
+            if not closed_trades:
+                return {
+                    'win_rate': 0.0,
+                    'avg_win': 0.0,
+                    'avg_loss': 0.0,
+                    'profit_factor': 0.0,
+                    'total_trades': 0,
+                    'active_trades': active_trades_count,
+                    'avg_trade_pnl': 0.0,
+                    'total_fees': self.daily_stats['total_fees']
+                }
+            
+            winning_trades = [t for t in closed_trades if t['pnl_usd'] > 0]
+            losing_trades = [t for t in closed_trades if t['pnl_usd'] < 0]
+            breakeven_trades = [t for t in closed_trades if t['pnl_usd'] == 0]
+            
+            win_rate = (len(winning_trades) / len(closed_trades)) * 100 if closed_trades else 0.0
+            avg_win = np.mean([t['pnl_usd'] for t in winning_trades]) if winning_trades else 0.0
+            avg_loss = np.mean([t['pnl_usd'] for t in losing_trades]) if losing_trades else 0.0
+            avg_trade_pnl = np.mean([t['pnl_usd'] for t in closed_trades]) if closed_trades else 0.0
+            
+            total_profit = sum(t['pnl_usd'] for t in winning_trades)
+            total_loss = abs(sum(t['pnl_usd'] for t in losing_trades))
+            profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
+            
+            return {
+                'win_rate': win_rate,
+                'avg_win': avg_win,
+                'avg_loss': avg_loss,
+                'profit_factor': profit_factor,
+                'total_trades': len(closed_trades),
+                'active_trades': active_trades_count,
+                'winning_trades': len(winning_trades),
+                'losing_trades': len(losing_trades),
+                'breakeven_trades': len(breakeven_trades),
+                'avg_trade_pnl': avg_trade_pnl,
+                'total_fees': self.daily_stats['total_fees']
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في حساب مقاييس الأداء: {e}")
+            return {
+                'win_rate': 0.0,
+                'avg_win': 0.0,
+                'avg_loss': 0.0,
+                'profit_factor': 0.0,
+                'total_trades': 0,
+                'active_trades': 0,
+                'avg_trade_pnl': 0.0,
+                'total_fees': 0.0
+            }
+
+    def get_active_trades_details(self):
+        """الحصول على تفاصيل الصفقات النشطة"""
+        try:
+            active_trades = []
+            
+            # الجمع بين الصفقات من السجل والصفقات النشطة في البوت
+            recorded_active = [t for t in self.trade_history if t['status'] == 'open']
+            bot_active = self.bot.active_trades if hasattr(self.bot, 'active_trades') else {}
+            
+            for trade in recorded_active:
+                symbol = trade['symbol']
+                current_price = self.bot.get_current_price(symbol)
+                
+                if current_price:
+                    if trade['direction'] == 'LONG':
+                        pnl_percent = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                    else:
+                        pnl_percent = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                    
+                    trade_value = trade['size_usd']
+                    unrealized_pnl = (pnl_percent / 100) * (trade_value / self.bot.TRADING_SETTINGS['max_leverage'])
+                    
+                    trade_age = datetime.now(damascus_tz) - trade['open_time']
+                    age_minutes = trade_age.total_seconds() / 60
+                    
+                    active_trades.append({
+                        'symbol': symbol,
+                        'direction': trade['direction'],
+                        'entry_price': trade['entry_price'],
+                        'current_price': current_price,
+                        'pnl_percent': pnl_percent,
+                        'unrealized_pnl': unrealized_pnl,
+                        'age_minutes': age_minutes
+                    })
+            
+            # إضافة الصفقات من البوت التي قد لا تكون مسجلة
+            for symbol, trade in bot_active.items():
+                if not any(t['symbol'] == symbol for t in active_trades):
+                    current_price = self.bot.get_current_price(symbol)
+                    
+                    if current_price and 'entry_price' in trade:
+                        if trade['side'] == 'LONG':
+                            pnl_percent = (current_price - trade['entry_price']) / trade['entry_price'] * 100
+                        else:
+                            pnl_percent = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
+                        
+                        trade_value = trade['quantity'] * trade['entry_price']
+                        unrealized_pnl = (pnl_percent / 100) * (trade_value / trade.get('leverage', 1))
+                        
+                        trade_age = datetime.now(damascus_tz) - trade['timestamp']
+                        age_minutes = trade_age.total_seconds() / 60
+                        
+                        active_trades.append({
+                            'symbol': symbol,
+                            'direction': trade['side'],
+                            'entry_price': trade['entry_price'],
+                            'current_price': current_price,
+                            'pnl_percent': pnl_percent,
+                            'unrealized_pnl': unrealized_pnl,
+                            'age_minutes': age_minutes
+                        })
+            
+            return active_trades
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب تفاصيل الصفقات النشطة: {e}")
+            return []
+
     def generate_performance_report(self):
-        """إنشاء تقرير أداء مفصل"""
+        """إنشاء تقرير أداء مفصل ودقيق"""
         if not self.notifier:
             return
             
         try:
+            # تحديث الرصيد الحالي من المنصة
+            self.update_current_balance()
+            
             # حساب الوقت المنقضي
             current_time = datetime.now(damascus_tz)
             uptime = current_time - self.start_time
@@ -169,14 +382,16 @@ class PerformanceReporter:
             # مقاييس الأداء
             metrics = self.calculate_performance_metrics()
             
-            # الرصيد الحالي
-            current_balance = sum(self.bot.symbol_balances.values()) if hasattr(self.bot, 'symbol_balances') else 0
-            initial_balance = self.bot.TOTAL_CAPITAL
-            balance_change = current_balance - initial_balance
-            balance_change_percent = (balance_change / initial_balance) * 100
+            # حساب التغير في الرصيد
+            balance_change = self.current_balance - self.initial_balance
+            balance_change_percent = (balance_change / self.initial_balance) * 100 if self.initial_balance > 0 else 0
             
             # الصفقات النشطة
-            active_trades = self.bot.active_trades if hasattr(self.bot, 'active_trades') else {}
+            active_trades = self.get_active_trades_details()
+            active_trades_count = len(active_trades)
+            
+            # الصفقات المغلقة
+            closed_trades_count = self.get_closed_trades_count()
             
             # إنشاء التقرير
             report = f"""
@@ -187,34 +402,43 @@ class PerformanceReporter:
 • وقت التقرير: {current_time.strftime('%Y-%m-%d %H:%M:%S')}
 
 💰 <b>الأداء المالي:</b>
-• الرصيد الأولي: ${initial_balance:.2f}
-• الرصيد الحالي: ${current_balance:.2f}
+• الرصيد الأولي: ${self.initial_balance:.2f}
+• الرصيد الحالي: ${self.current_balance:.2f}
 • التغير: ${balance_change:+.2f} ({balance_change_percent:+.2f}%)
 • أعلى رصيد: ${self.daily_stats['max_balance']:.2f}
 • أقل رصيد: ${self.daily_stats['min_balance']:.2f}
+• إجمالي العمولات: ${metrics['total_fees']:.4f}
 
 📈 <b>إحصائيات التداول:</b>
 • إجمالي الصفقات: {metrics['total_trades']}
-• الصفقات النشطة: {metrics['active_trades']}
+• الصفقات النشطة: {active_trades_count}
+• الصفقات المغلقة: {closed_trades_count}
 • نسبة الربح: {metrics['win_rate']:.1f}%
 • متوسط الربح: ${metrics['avg_win']:.2f}
 • متوسط الخسارة: ${metrics['avg_loss']:.2f}
+• متوسط الصفقة: ${metrics['avg_trade_pnl']:.2f}
 • عامل الربحية: {metrics['profit_factor']:.2f}
 
 🔍 <b>تفاصيل الصفقات:</b>
 • الصفقات المفتوحة: {self.daily_stats['trades_opened']}
 • الصفقات المغلقة: {self.daily_stats['trades_closed']}
-• الصفقات الرابحة: {self.daily_stats['winning_trades']}
-• الصفقات الخاسرة: {self.daily_stats['losing_trades']}
+• الصفقات الرابحة: {metrics['winning_trades']}
+• الصفقات الخاسرة: {metrics['losing_trades']}
+• الصفقات المتعادلة: {metrics['breakeven_trades']}
 
-🎯 <b>الصفقات النشطة حالياً:</b>
+🎯 <b>الصفقات النشطة حالياً ({active_trades_count}):</b>
 """
             
             if active_trades:
-                for symbol, trade in active_trades.items():
-                    trade_age = current_time - trade['timestamp']
-                    age_minutes = trade_age.total_seconds() / 60
-                    report += f"• {symbol} ({trade['side']}) - {age_minutes:.0f} دقيقة\n"
+                total_unrealized_pnl = 0.0
+                for trade in active_trades:
+                    pnl_emoji = "🟢" if trade['pnl_percent'] > 0 else "🔴"
+                    report += f"• {trade['symbol']} ({trade['direction']}) - {trade['age_minutes']:.0f} دقيقة\n"
+                    report += f"  {pnl_emoji} غير محقق: {trade['pnl_percent']:+.2f}% (${trade['unrealized_pnl']:+.2f})\n"
+                    report += f"  💰 الدخول: ${trade['entry_price']:.4f} | الحالي: ${trade['current_price']:.4f}\n"
+                    total_unrealized_pnl += trade['unrealized_pnl']
+                
+                report += f"\n📈 <b>إجمالي الأرباح/الخسائر غير المحققة:</b> ${total_unrealized_pnl:+.2f}"
             else:
                 report += "• لا توجد صفقات نشطة\n"
                 
@@ -222,22 +446,53 @@ class PerformanceReporter:
             
             # إرسال التقرير
             self.notifier.send_message(report, 'performance_report')
-            logger.info("✅ تم إرسال تقرير الأداء")
+            logger.info("✅ تم إرسال تقرير الأداء المحسن")
             
         except Exception as e:
             logger.error(f"❌ خطأ في إنشاء تقرير الأداء: {e}")
             
     def reset_daily_stats(self):
         """إعادة تعيين إحصائيات اليوم"""
-        self.daily_stats = {
-            'trades_opened': 0,
-            'trades_closed': 0,
-            'winning_trades': 0,
-            'losing_trades': 0,
-            'total_pnl': 0.0,
-            'max_balance': 0.0,
-            'min_balance': float('inf')
-        }
+        try:
+            # الحفاظ على الرصيد الحالي كأول رصيد لليوم الجديد
+            current_balance = self.current_balance
+            
+            self.daily_stats = {
+                'trades_opened': 0,
+                'trades_closed': 0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'total_pnl': 0.0,
+                'max_balance': current_balance,
+                'min_balance': current_balance,
+                'total_fees': 0.0
+            }
+            
+            logger.info("🔄 تم إعادة تعيين إحصائيات اليوم")
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في إعادة تعيين إحصائيات اليوم: {e}")
+
+    def get_detailed_trade_history(self):
+        """الحصول على سجل الصفقات المفصل"""
+        return self.trade_history.copy()
+
+    def get_summary_stats(self):
+        """الحصول على إحصائيات ملخصة"""
+        metrics = self.calculate_performance_metrics()
+        
+        return {
+            'initial_balance': self.initial_balance,
+            'current_balance': self.current_balance,
+            'total_change': self.current_balance - self.initial_balance,
+            'total_change_percent': ((self.current_balance - self.initial_balance) / self.initial_balance * 100) if self.initial_balance > 0 else 0,
+            'total_trades': metrics['total_trades'],
+            'active_trades': metrics['active_trades'],
+            'win_rate': metrics['win_rate'],
+            'total_pnl': self.daily_stats['total_pnl'],
+            'total_fees': metrics['total_fees']
+        }    
+
 
 class PriceManager:
     def __init__(self, symbols, client):
@@ -385,6 +640,8 @@ class FuturesTradingBot:
             symbol: (weight / self.WEIGHT_SUM) * self.TOTAL_CAPITAL 
             for symbol, weight in self.OPTIMAL_SETTINGS['weights'].items()
         }
+        self.performance_reporter = PerformanceReporter(self, self.notifier)
+        self.performance_reporter.initialize_balances()
         
         self.api_key = os.environ.get('BINANCE_API_KEY')
         self.api_secret = os.environ.get('BINANCE_API_SECRET')
@@ -916,6 +1173,14 @@ class FuturesTradingBot:
                 
             if not self.set_margin_type(symbol, self.TRADING_SETTINGS['margin_type']):
                 raise Exception("فشل ضبط نوع الهامش")
+
+            trade_value = quantity * current_price
+            estimated_fees = trade_value * 0.0004  # 0.04%
+            
+            # تسجيل الصفقة مع العمولات
+            self.performance_reporter.record_trade_open(
+                symbol, direction, avg_price, trade_value, estimated_fees
+            )
             
             side = 'BUY' if direction == 'LONG' else 'SELL'
             
@@ -1036,6 +1301,14 @@ class FuturesTradingBot:
                 pnl_percent = (trade['entry_price'] - current_price) / trade['entry_price'] * 100
             
             pnl_usd = (pnl_percent / 100) * (trade['quantity'] * trade['entry_price'])
+
+            trade_value = trade['quantity'] * current_price
+            estimated_fees = trade_value * 0.0004  # 0.04%
+            
+            # تسجيل إغلاق الصفقة مع العمولات
+            self.performance_reporter.record_trade_close(
+                symbol, current_price, pnl_percent, pnl_usd, reason, estimated_fees
+            )
             
             side = 'SELL' if trade['side'] == 'LONG' else 'BUY'
             
