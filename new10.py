@@ -612,7 +612,7 @@ class FuturesTradingBot:
         'base_trade_size': 10,
         'max_leverage': 5,
         'margin_type': 'ISOLATED',
-        'max_active_trades': 3,
+        'max_active_trades': 4,
         'data_interval': '30m',
         'rescan_interval_minutes': 10,
         'price_update_interval': 3,
