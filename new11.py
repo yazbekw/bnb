@@ -172,6 +172,133 @@ class TradeManager:
         """الحصول على جميع الصفقات النشطة"""
         return self.active_trades.copy()
 
+
+class ContinuousMonitor:
+    """مراقب مستمر للصفقات النشطة بناءً على المؤشرات"""
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.monitor_interval = 10  # دقائق
+        self.last_monitor_time = {}
+
+    def is_trade_old_enough(self, trade):
+        """التحقق من أن الصفقة قديمة بما يكفي للمراقبة"""
+        trade_age = datetime.now(damascus_tz) - trade['timestamp']
+        min_age_minutes = self.bot.TRADING_SETTINGS.get('min_trade_age_for_monitor', 30)
+        return trade_age.total_seconds() >= min_age_minutes * 60  # ✅ تم التصحيح
+        
+    def should_monitor_trade(self, symbol, trade):  # ✅ تم التصحيح
+        """التحقق من الحاجة لمراقبة الصفقة"""
+        # ✅ أولاً تحقق من عمر الصفقة
+        if not self.is_trade_old_enough(trade):
+            return False
+            
+        current_time = time.time()
+        last_time = self.last_monitor_time.get(symbol, 0)
+        
+        if current_time - last_time >= self.monitor_interval * 60:
+            self.last_monitor_time[symbol] = current_time
+            return True
+        return False
+    
+    def analyze_trade_for_exit(self, symbol, trade):
+        """تحليل الصفقة لتحديد إذا كانت تحتاج للإغلاق"""
+        try:
+            # الحصول على البيانات الحالية
+            data = self.bot.get_historical_data(symbol, self.bot.TRADING_SETTINGS['data_interval'], 50)
+            if data is None or len(data) < 20:
+                return False, "لا توجد بيانات كافية"
+            
+            data = self.bot.calculate_indicators(data)
+            if len(data) == 0:
+                return False, "فشل حساب المؤشرات"
+            
+            latest = data.iloc[-1]
+            current_price = self.bot.get_current_price(symbol)
+            
+            # تحليل الإشارات بناءً على اتجاه الصفقة
+            if trade['side'] == 'LONG':
+                exit_signal = self._check_long_exit_signals(latest, current_price, trade)
+                reason = "إشارة بيل لل LONG"
+            else:  # SHORT
+                exit_signal = self._check_short_exit_signals(latest, current_price, trade)
+                reason = "إشارة بيل لل SHORT"
+            
+            return exit_signal, reason
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في تحليل الخروج لـ {symbol}: {e}")
+            return False, f"خطأ في التحليل: {e}"
+    
+    def _check_long_exit_signals(self, latest, current_price, trade):
+        """فحص إشارات الخروج لصفقات LONG"""
+        exit_conditions = [
+            # انعكاس الاتجاه
+            latest['sma10'] < latest['sma20'],
+            # ضعف الزخم
+            latest['momentum'] < -0.005,
+            # RSI في منطقة ذروة الشراء
+            latest['rsi'] > 70,
+            # انعكاس MACD
+            latest['macd'] < latest['macd_signal'],
+            # اختراق المتوسط المتحرك الرئيسي
+            current_price < latest['sma50'] * 0.995
+        ]
+        
+        # نظام ترجيح للإشارات
+        exit_score = sum([
+            1.5 if exit_conditions[0] else 0,  # انعكاس الاتجاه القصير
+            1.2 if exit_conditions[1] else 0,  # زخم سلبي قوي
+            1.0 if exit_conditions[2] else 0,  # RSI مرتفع
+            0.8 if exit_conditions[3] else 0,  # انعكاس MACD
+            1.0 if exit_conditions[4] else 0   # اختراق المتوسط الرئيسي
+        ])
+        
+        return exit_score >= 3.0  # حد أدنى للإغلاق
+    
+    def _check_short_exit_signals(self, latest, current_price, trade):
+        """فحص إشارات الخروج لصفقات SHORT"""
+        exit_conditions = [
+            # انعكاس الاتجاه
+            latest['sma10'] > latest['sma20'],
+            # قوة الزخم الإيجابي
+            latest['momentum'] > 0.005,
+            # RSI في منطقة ذروة البيع
+            latest['rsi'] < 30,
+            # انعكاس MACD
+            latest['macd'] > latest['macd_signal'],
+            # اختراق المتوسط المتحرك الرئيسي
+            current_price > latest['sma50'] * 1.005
+        ]
+        
+        exit_score = sum([
+            1.5 if exit_conditions[0] else 0,
+            1.2 if exit_conditions[1] else 0,
+            1.0 if exit_conditions[2] else 0,
+            0.8 if exit_conditions[3] else 0,
+            1.0 if exit_conditions[4] else 0
+        ])
+        
+        return exit_score >= 3.0
+    
+    def monitor_active_trades(self):
+        """مراقبة جميع الصفقات النشطة"""
+        try:
+            active_trades = self.bot.trade_manager.get_all_trades()
+            
+            for symbol, trade in active_trades.items():
+                if not self.should_monitor_trade(symbol, trade):  # ✅ تم التصحيح
+                    continue
+                
+                should_exit, reason = self.analyze_trade_for_exit(symbol, trade)
+                
+                if should_exit:
+                    logger.info(f"🔄 إغلاق صفقة {symbol} بناءً على المراقبة: {reason}")
+                    self.bot.close_trade(symbol, f"مراقبة_مستمرة: {reason}")
+                    
+        except Exception as e:
+            logger.error(f"❌ خطأ في مراقبة الصفقات: {e}")
+
 class PerformanceReporter:
     """كلاس محسن لتقارير أداء البوت"""
     
@@ -346,6 +473,9 @@ class FuturesTradingBot:
         'min_trend_strength': 0.5,
         'max_price_deviation': 8.0,
         'max_volatility': 5.0,
+        'continuous_monitor_interval': 10,  # دقائق بين كل فحص
+        'min_trade_age_for_monitor': 30,    # دقيقة - لا تراقب الصفقات الجديدة
+        'exit_signal_threshold': 3.0,       # الحد الأدنى لإشارات الخروج
     }
 
     @classmethod
@@ -361,6 +491,7 @@ class FuturesTradingBot:
         self.api_secret = os.environ.get('BINANCE_API_SECRET')
         self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+
 
         if not all([self.api_key, self.api_secret]):
             raise ValueError("مفاتيح Binance مطلوبة")
@@ -400,6 +531,11 @@ class FuturesTradingBot:
         self.start_performance_reporting()
         self.start_trade_sync()
         self.send_startup_message()
+
+        self.continuous_monitor = ContinuousMonitor(self)
+    
+        # بدء خدمة المراقبة
+        self.start_continuous_monitoring()
         
         FuturesTradingBot._instance = self
         logger.info("✅ تم تهيئة البوت بنجاح")
@@ -411,6 +547,20 @@ class FuturesTradingBot:
             symbol: (weight / weight_sum) * self.TOTAL_CAPITAL 
             for symbol, weight in self.OPTIMAL_SETTINGS['weights'].items()
         }
+
+    def start_continuous_monitoring(self):
+        """بدء خدمة المراقبة المستمرة"""
+        def monitor_thread():
+            while True:
+                try:
+                    self.continuous_monitor.monitor_active_trades()
+                    time.sleep(60)  # فحص كل دقيقة
+                except Exception as e:
+                    logger.error(f"❌ خطأ في مراقبة الصفقات: {e}")
+                    time.sleep(30)
+    
+        threading.Thread(target=monitor_thread, daemon=True).start()
+        logger.info("✅ بدء خدمة المراقبة المستمرة")
 
     def test_api_connection(self):
         """اختبار اتصال API"""
